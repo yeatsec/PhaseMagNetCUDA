@@ -1,0 +1,9 @@
+
+TODO List / Reminders
+
+	checkpoint work
+
+	Implement convolution inference / training
+	Implement maxpool inference / training
+
+	Implement complex arithmetic
