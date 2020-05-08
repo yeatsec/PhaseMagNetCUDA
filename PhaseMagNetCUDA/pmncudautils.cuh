@@ -9,13 +9,15 @@
 #include "device_launch_parameters.h"
 
 #define BLOCK_SIZE 16
-#define VEC_SIZE 256
+#define VEC_SIZE 16
 
-#define LRN_RATE 0.005
+#define LRN_RATE 0.05f
 
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
-#define WGT_HIGH 0.01
-#define WGT_LOW 0.0
+#define WGT_HIGH 0.01f
+#define WGT_LOW 0.0f
+
+#define PI 3.14159265f
 
 enum class LayerType { input, fc, conv, maxpool };
 enum class ActivationType { relu, softmax };
@@ -86,8 +88,12 @@ struct Matrix {
 	}
 	void fillFromUbyte(const uchar* const ucharptr) {
 		for (size_t i = 0; i < mdim.cdim * mdim.rdim; ++i) {
-			data[i] = (DTYPE)(ucharptr[i]) / 255.0;
+			data[i] = (DTYPE)(ucharptr[i]) / 255.0f;
 		}
+	}
+	void fillRandom(T minval, T maxval) {
+		for (size_t i = 0; i < mdim.cdim * mdim.rdim; ++i)
+			data[i] = minval + static_cast <T> (rand()) / (static_cast <T> (RAND_MAX / (maxval-minval)));
 	}
 	Matrix<T> transpose() {
 		Matrix<T> temp(mdim);
@@ -200,62 +206,96 @@ struct LayerParams {
 
 struct Layer {
 	LayerParams layParams;
-	Matrix<DTYPE> layerData; // default to n-vector, (1, N)
+	Matrix<DTYPE> layerDataR; // default to n-vector, (1, N)
+	Matrix<DTYPE> layerDataI;
 	Matrix<DTYPE> errorData;
-	Matrix<DTYPE> bias;
-	Matrix<DTYPE>* weightsPrev;
-	Matrix<DTYPE>* weightsNext;
+	Matrix<DTYPE> biasR;
+	Matrix<DTYPE> biasI;
+	Matrix<DTYPE>* weightsPrevR;
+	Matrix<DTYPE>* weightsPrevI;
+	Matrix<DTYPE>* weightsNextR;
+	Matrix<DTYPE>* weightsNextI;
 	Layer(const LayerParams& lp) :
 		layParams(lp),
-		layerData(lp.matDim),
+		layerDataR(lp.matDim),
+		layerDataI(lp.matDim),
 		errorData(lp.matDim),
-		bias(lp.matDim),
-		weightsPrev(nullptr),
-		weightsNext(nullptr)
+		biasR(lp.matDim),
+		biasI(lp.matDim),
+		weightsPrevR(nullptr),
+		weightsPrevI(nullptr),
+		weightsNextR(nullptr),
+		weightsNextI(nullptr)
 	{
-		bias.fill(0);
+		biasR.fillRandom(-0.01, 0.01);
+		biasI.fillRandom(-0.01, 0.01);
 	}
 	Layer(const Layer& toCopy) :
 		layParams(toCopy.layParams),
-		layerData(toCopy.layerData),
+		layerDataR(toCopy.layerDataR),
+		layerDataI(toCopy.layerDataI),
 		errorData(toCopy.errorData),
-		bias(toCopy.bias),
-		weightsPrev(toCopy.weightsPrev), // shallow copy
-		weightsNext(toCopy.weightsNext)
+		biasR(toCopy.biasR),
+		biasI(toCopy.biasI),
+		weightsPrevR(toCopy.weightsPrevR), // shallow copy
+		weightsPrevI(toCopy.weightsPrevI),
+		weightsNextR(toCopy.weightsNextR),
+		weightsNextI(toCopy.weightsNextI)
 	{}
 	Layer& operator=(Layer other) {
-		std::swap(layParams, other.layParams);
-		std::swap(layerData, other.layerData);
-		std::swap(errorData, other.errorData);
-		std::swap(bias, other.bias);
+		if (&other != this) {
+			std::swap(layParams, other.layParams);
+			std::swap(layerDataR, other.layerDataR);
+			std::swap(layerDataI, other.layerDataI);
+			std::swap(errorData, other.errorData);
+			std::swap(biasR, other.biasR);
+			std::swap(biasI, other.biasI);
+			weightsPrevR = other.weightsPrevR;
+			weightsPrevI = other.weightsPrevI;
+			weightsNextR = other.weightsNextR;
+			weightsNextI = other.weightsNextI;
+		}
 		return *this;
 	}
 	~Layer() {
 		// delete weightsPrev;
 		// weightsNext is not "owned" by this layer
-		weightsPrev = nullptr;
-		weightsNext = nullptr;
+		weightsPrevR = nullptr;
+		weightsPrevI = nullptr;
+		weightsNextR = nullptr;
+		weightsNextI = nullptr;
 	}
 	void freeWeightsPrev(void) {
-		delete weightsPrev;
-		weightsPrev = nullptr;
+		delete weightsPrevR;
+		delete weightsPrevI;
+		weightsPrevR = nullptr;
+		weightsPrevI = nullptr;
 	}
 	void initializeWeightsPrev(const MatrixDim& matDim) {
-		weightsPrev = new Matrix<DTYPE>(matDim);
+		weightsPrevR = new Matrix<DTYPE>(matDim);
+		weightsPrevI = new Matrix<DTYPE>(matDim);
 		for (unsigned int i = 0; i < matDim.cdim*matDim.rdim; ++i) {
 			// random number generator to initialize weights
 			DTYPE max_weight = 2.0 / ((DTYPE)matDim.rdim);
-			(weightsPrev->data)[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
+			(weightsPrevR->data)[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
+			(weightsPrevI->data)[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
 		}
 	}
-	void linkWeightsNext(Matrix<DTYPE>* const wgtptr) {
-		weightsNext = wgtptr;
+	void linkWeightsNext(const Layer* const layptr) {
+		weightsNextR = layptr->weightsPrevR;
+		weightsNextI = layptr->weightsPrevI;
 	}
-	Matrix<DTYPE>* getWeightsPrev() const {
-		return weightsPrev;
+	Matrix<DTYPE>* getWeightsPrevR() const {
+		return weightsPrevR;
 	}
-	Matrix<DTYPE>* getWeightsNext() const {
-		return weightsNext;
+	Matrix<DTYPE>* getWeightsPrevI() const {
+		return weightsPrevI;
+	}
+	Matrix<DTYPE>* getWeightsNextR() const {
+		return weightsNextR;
+	}
+	Matrix<DTYPE>* getWeightsNextI() const {
+		return weightsNextI;
 	}
 };
 

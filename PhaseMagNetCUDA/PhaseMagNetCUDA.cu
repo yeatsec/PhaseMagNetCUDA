@@ -14,6 +14,10 @@
 	Convention: Activation A<1, N>, Weights <N, M>, Activation <1, M>
 */
 
+DTYPE abs2(DTYPE r, DTYPE i) {
+	return sqrt((r * r) + (i * i));
+}
+
 PhaseMagNetCUDA::PhaseMagNetCUDA() :
 	layers(),
 	initialized(false) {}
@@ -37,7 +41,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			matDim.stride = matDim.cdim;
 			elemPtr->initializeWeightsPrev(matDim); // weightsprev pointer set
 			printf("linked\n");
-			prevPtr->linkWeightsNext(elemPtr->getWeightsPrev()); // link ptr
+			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
 	};
 	auto initfromfilefunc = [](LinkedListNode<Layer>* ptr) { // weights already allocated
@@ -46,7 +50,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			LinkedListNode<Layer>* prevNodePtr = ptr->getPrev();
 			Layer* prevPtr = prevNodePtr->getElemPtr();
 			printf("linked\n");
-			prevPtr->linkWeightsNext(elemPtr->getWeightsPrev()); // link ptr
+			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
 	};
 	if (fromFile) {
@@ -63,7 +67,13 @@ void PhaseMagNetCUDA::free() {
 			Layer* elemPtr = ptr->getElemPtr();
 			elemPtr->freeWeightsPrev();
 		}
+		if (ptr->hasNext()) {
+			Layer* elemPtr = ptr->getElemPtr();
+			elemPtr->weightsNextR = nullptr;
+			elemPtr->weightsNextI = nullptr;
+		}
 	};
+	layers.forEach(freefunc);
 }
 
 void PhaseMagNetCUDA::addLayer(const LayerParams& lp) {
@@ -74,12 +84,11 @@ void PhaseMagNetCUDA::addLayer(const LayerParams& lp) {
 
 void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar* labels, bool verbose) {
 	assert(initialized);
-	Matrix<DTYPE> inputdata(layers.getHead()->getElemPtr()->layParams.matDim);
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
 	ex.fill(0.0);
 	for (size_t i = 0; i < num_examples; ++i) {
 		ex.setElem(0, labels[i], 1.0);
-		layers.getHead()->getElemPtr()->layerData.fillFromUbyte(inputData[i]);
+		setInput(inputData[i]);
 		resetState(); // doesn't overwrite input
 		forwardPropagate();
 		backwardPropagate(ex);
@@ -89,9 +98,11 @@ void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar*
 		}
 		Matrix<DTYPE>& output = getOutput();
 		if (isnan(output.getElem(0, 0))) {
+			printf("isNaN\n");
 			throw std::runtime_error("isNaN\n");
 		}
 	}
+	printf("\n");
 }
 
 Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputData) {
@@ -99,7 +110,7 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 	MatrixDim mdim(num_examples, layers.getTail()->getElem().layParams.matDim.cdim, sizeof(float)); // hardcode float here
 	Matrix<DTYPE> predictions(mdim);
 	for (size_t i = 0; i < num_examples; ++i) {
-		layers.getHead()->getElemPtr()->layerData.fillFromUbyte(inputData[i]);
+		setInput(inputData[i]);
 		forwardPropagate();
 		Matrix<DTYPE>& output = getOutput();
 		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
@@ -129,14 +140,23 @@ float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uc
 	return ((float) num_correct) / ((float) num_examples);
 }
 
-void PhaseMagNetCUDA::setInput(const Matrix<DTYPE>& input) {
+void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
-	layPtr->layerData.fillFromMatrix(input);
+	for (size_t i = 0; i < layPtr->layParams.matDim.cdim; ++i) {
+		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f);
+		DTYPE real = cosf(rad);
+		DTYPE imag = sinf(rad);
+		layPtr->layerDataR.setElem(0, i, real);
+		layPtr->layerDataI.setElem(0, i, imag);
+	}
 }
 
 Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	Layer* layPtr = layers.getTail()->getElemPtr();
-	Matrix<DTYPE> out(layPtr->layerData);
+	Matrix<DTYPE> out(layPtr->layParams.matDim);
+	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
+		out.setElem(0, i, abs2(layPtr->layerDataR.getElem(0, i), layPtr->layerDataI.getElem(0, i))); // magnitude
+	}
 	// iterate through output and calculate softmax
 	DTYPE agg = 0.0;
 	for (size_t i = 0; i < out.mdim.cdim; ++i) {
@@ -157,19 +177,18 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 		if (ptr->hasNext()) { // only propagate if not last layer
 			Layer* prevLayerPtr = ptr->getElemPtr();
 			Layer* nextLayerPtr = (ptr->getNext())->getElemPtr();
-			vecMatMultWithCuda(prevLayerPtr->layerData, *(prevLayerPtr->getWeightsNext()), nextLayerPtr->layerData); // writes results in nextLayerRef.layerdata
-			nextLayerPtr->layerData.addMe(nextLayerPtr->bias); // add the bias to result
-			auto relufunc = [](DTYPE* actptr) {
-				*actptr = ((*actptr) < 0.0) ? 0.0 : *actptr;
-			};
-			nextLayerPtr->layerData.forEach(relufunc);
+			vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+				*(prevLayerPtr->getWeightsNextR()), *(prevLayerPtr->getWeightsNextI()), 
+				nextLayerPtr->layerDataR, nextLayerPtr->layerDataI); // writes results in nextLayerRef.layerdata
+			nextLayerPtr->layerDataR.addMe(nextLayerPtr->biasR); // add the bias to result
+			nextLayerPtr->layerDataI.addMe(nextLayerPtr->biasI);
 		}
 	};
 	layers.forEach(propagatefunc);
 }
 
 void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected) {
-	// calculate error at the output
+	// calculate error at the outputs
 	auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
 	Matrix<DTYPE> err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
 	((layers.getTail()->getElemPtr())->errorData).fillFromMatrix(err);
@@ -180,23 +199,11 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected) {
 		if (ptr->hasPrev()) {
 			Layer* prevLayerPtr = (ptr->getPrev())->getElemPtr();
 			Layer* nextLayerPtr = ptr->getElemPtr(); // iterating backwards, so this appears backwards wrt forwardpropagate
-			auto reluderivfunc = [](DTYPE act, DTYPE err) {
-				if (act > 0.0) {
-					return err;
-				}
-				else {
-					return (DTYPE) 0;
-				}
-			};
-			Matrix<DTYPE> errToPropBack = Matrix<DTYPE>::pointwiseOp(nextLayerPtr->layerData, nextLayerPtr->errorData, reluderivfunc);
-			// propagate error backwards
-			vecMatMultWithCuda(errToPropBack, (prevLayerPtr->getWeightsNext())->transpose(), prevLayerPtr->errorData);
-			// update weights
-			updateWeightsWithCuda(prevLayerPtr->layerData, *(prevLayerPtr->getWeightsNext()), nextLayerPtr->errorData);
-			MatrixDim biasDim(1, 1, sizeof(DTYPE));
-			Matrix<DTYPE> biasMat(biasDim);
-			biasMat.data[0] = 1.0;
-			updateWeightsWithCuda(biasMat, nextLayerPtr->bias, nextLayerPtr->errorData);
+			//printf("%5.3f %5.3f\n", nextLayerPtr->layerDataR.data[0], nextLayerPtr->layerDataI.data[0]);
+			// update the bias, backpropagate error, update weights
+			complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
+				*(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
+				nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData);
 		}
 	};
 	layers.forEachReverse(backpropagatefunc);
@@ -207,7 +214,8 @@ void PhaseMagNetCUDA::resetState(void) {
 	auto resetfunc = [](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasPrev()) { // input doesn't need to be reset; will be overwritten
 			Layer* elemPtr = ptr->getElemPtr(); // reference to this element
-			elemPtr->layerData.fill(0);
+			elemPtr->layerDataR.fill(0);
+			elemPtr->layerDataI.fill(0);
 			elemPtr->errorData.fill(0);
 		}
 	};
@@ -264,8 +272,10 @@ void writeLayer(std::ostream& os, const Layer* layptr) {
 	case LayerType::input:
 		break;
 	default: // has biases and weightsPrev
-		writeMatrix(os, layptr->bias);
-		writeMatrix(os, *(layptr->weightsPrev));
+		writeMatrix(os, layptr->biasR);
+		writeMatrix(os, layptr->biasI);
+		writeMatrix(os, *(layptr->weightsPrevR));
+		writeMatrix(os, *(layptr->weightsPrevI));
 		break;
 	}
 }
@@ -290,9 +300,12 @@ Layer readLayer(std::ifstream& istrm) {
 		// weightsPrev will remain nullptr and bias will be 0; move on
 		break;
 	default:
-		lay.bias.fillFromMatrix(readMatrix<DTYPE>(istrm));
+		lay.biasR.fillFromMatrix(readMatrix<DTYPE>(istrm));
+		lay.biasI.fillFromMatrix(readMatrix<DTYPE>(istrm));
 		Matrix<DTYPE>& weightsPrevRef = readMatrix<DTYPE>(istrm);
-		lay.weightsPrev = new Matrix<DTYPE>(weightsPrevRef); // allocated and copied
+		lay.weightsPrevR = new Matrix<DTYPE>(weightsPrevRef); // allocated and copied
+		weightsPrevRef = readMatrix<DTYPE>(istrm);
+		lay.weightsPrevI = new Matrix<DTYPE>(weightsPrevRef); // allocated and copied
 		break;
 	}
 	return lay;

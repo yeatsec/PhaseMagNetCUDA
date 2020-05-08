@@ -8,12 +8,14 @@
 #include "pmncudautils.cuh"
 #include "LinkedList.cuh"
 
+typedef unsigned char uchar;
+
 class PhaseMagNetCUDA {
 private:
 	LinkedList<Layer> layers;
 public:
 	bool initialized;
-	void setInput(const Matrix<DTYPE>& input);
+	void setInput(const uchar* const ucharptr);
 	Matrix<DTYPE> getOutput(void) const;
 	void forwardPropagate(void);
 	void backwardPropagate(const Matrix<DTYPE>& expected);
