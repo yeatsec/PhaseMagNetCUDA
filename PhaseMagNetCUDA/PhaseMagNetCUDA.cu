@@ -105,7 +105,7 @@ void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar*
 	printf("\n");
 }
 
-Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputData) {
+Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputData, bool verbose) {
 	assert(initialized);
 	MatrixDim mdim(num_examples, layers.getTail()->getElem().layParams.matDim.cdim, sizeof(float)); // hardcode float here
 	Matrix<DTYPE> predictions(mdim);
@@ -116,13 +116,18 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
 			predictions.setElem(i, j, output.data[j]);
 		}
+		if (verbose) {
+			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)i) / ((float)num_examples));
+		}
 	}
+	if (verbose)
+		printf("\n");
 	return predictions;
 }
 
-float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uchar* labels) {
+float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uchar* labels, bool verbose) {
 	assert(initialized);
-	Matrix<float>& predictions = predict(num_examples, inputData);
+	Matrix<float>& predictions = predict(num_examples, inputData, verbose);
 	size_t num_correct = 0;
 	for (size_t i = 0; i < num_examples; ++i) {
 		float maxval = 0;

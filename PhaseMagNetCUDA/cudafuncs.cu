@@ -63,9 +63,10 @@ __global__ void vecMatMultKernel(const CudaMatrixArg<DTYPE> Ar, const CudaMatrix
 		}
 		__syncthreads();
 	}
-
-	setElem(Cr, 0, col, Cvalue_r);
-	setElem(Ci, 0, col, Cvalue_i);
+	if (col < Cr.mdim.cdim) {
+		setElem(Cr, 0, col, Cvalue_r);
+		setElem(Ci, 0, col, Cvalue_i);
+	}
 }
 
 // helper function for MatMul
@@ -104,6 +105,13 @@ cudaError_t vecMatMultWithCuda(const Matrix<DTYPE>& Ar, const Matrix<DTYPE>& Ai,
 	Cr.fillFromCuda(d_Cr);
 	Ci.fillFromCuda(d_Ci);
 	return cudaStatus;
+}
+
+cudaError_t complexConvolutionWithCuda(const Matrix3D<DTYPE>& prevActR, const Matrix3D<DTYPE>& prevActI,
+	const Matrix3D<DTYPE>& ConvR, const Matrix3D<DTYPE>& ConvI,
+	Matrix3D<DTYPE>& postActR, Matrix3D<DTYPE>& postActI) {
+	cudaError_t err(cudaSuccess);
+	return err;
 }
 
 __global__ void updateWeightsKernel(const CudaMatrixArg<DTYPE> prevActs, CudaMatrixArg<DTYPE> weights, const CudaMatrixArg<DTYPE> nextError) {
@@ -321,3 +329,7 @@ cudaError_t complexBackpropWithCuda(const Matrix<DTYPE>& prevActR, const Matrix<
 	nextBiasI.fillFromCuda(d_nextBiasI);
 	return cudaStatus;
 }
+
+cudaError_t complexConvBackpropWithCuda(const Matrix3D<DTYPE>& prevActR, const Matrix3D<DTYPE>& prevActI,
+	Matrix3D<DTYPE>& prevError, Matrix3D<DTYPE>& weightsR, Matrix3D<DTYPE>& weightsI, Matrix<DTYPE>& nextBiasR, Matrix<DTYPE>& nextBiasI,
+	const Matrix3D<DTYPE>& nextActR, const Matrix3D<DTYPE> nextActI, const Matrix3D<DTYPE>& nextError);

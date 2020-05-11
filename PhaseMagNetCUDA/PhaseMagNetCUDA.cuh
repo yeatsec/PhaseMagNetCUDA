@@ -26,8 +26,8 @@ public:
 	void initialize(bool fromFile = false);
 	void free(void);
 	void train(const size_t num_examples, uchar** inputData, uchar* labels, bool verbose = false);
-	Matrix<DTYPE> predict(const size_t num_examples, uchar** inputData);
-	float evaluate(const size_t num_examples, uchar** inputData, uchar* labels);
+	Matrix<DTYPE> predict(const size_t num_examples, uchar** inputData, bool verbose = false);
+	float evaluate(const size_t num_examples, uchar** inputData, uchar* labels, bool verbose = false);
 	void save(const std::string& path);
 	void load(const std::string& path);
 };

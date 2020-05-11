@@ -11,7 +11,7 @@
 #define BLOCK_SIZE 16
 #define VEC_SIZE 16
 
-#define LRN_RATE 0.05f
+#define LRN_RATE 0.0001f
 
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
 #define WGT_HIGH 0.01f
@@ -39,6 +39,21 @@ struct MatrixDim {
 	bool operator==(const MatrixDim& other) const {
 		return (rdim == other.rdim && cdim == other.cdim && size == other.size && stride == other.stride);
 	}
+};
+
+struct MatrixDim3D {
+	size_t adim;
+	MatrixDim mdim;
+	MatrixDim3D() : mdim(), adim(1) {} // default ctor
+	MatrixDim3D(const MatrixDim& _mdim, const size_t& _adim = 1) : mdim(_mdim), adim(_adim) {}
+	bool operator==(const MatrixDim3D& other) const {
+		return (mdim == other.mdim && adim == other.adim);
+	}
+};
+
+struct ConvParams {
+	size_t filter_dim, stride, pad, n_filters;
+	
 };
 
 template <typename T>
@@ -133,6 +148,40 @@ struct Matrix {
 };
 
 template <typename T>
+struct Matrix3D {
+	MatrixDim3D mdim3d;
+	Matrix<T>* data;
+	Matrix3D() : data(nullptr) {
+		mdim3d.mdim.cdim = mdim3d.mdim.rdim = mdim3d.mdim.stride = mdim3d.mdim.size = 0;
+	}
+	Matrix3D(const MatrixDim3D & _mdim) : mdim3d(_mdim) {
+		data = new Matrix<T>(mdim3d.mdim)[_mdim.adim];
+	}
+	Matrix3D(const Matrix3D<T>& toCopy) : mdim3d(toCopy.mdim3d) {
+		data = new Matrix<T>(mdim3d.mdim)[mdim3d.adim];
+		for (unsigned int i = 0; i < mdim3d.adim; ++i) {
+			std::memcpy(data[i], toCopy.data[i], mdim3d.mdim.size);
+		}
+	}
+	Matrix3D<T>& operator=(Matrix3D<T> other) {
+		if (&other != this) {
+			std::swap(mdim3d, other.mdim3d);
+			std::swap(data, other.data);
+		}
+		else {
+			return *this;
+		}
+	}
+	~Matrix3D() {
+		delete[] data;
+		data = nullptr;
+	}
+	Matrix<T>& operator[](const unsigned int i) {
+		return data[i];
+	}
+};
+
+template <typename T>
 struct CudaMatrixArg {
 	MatrixDim mdim;
 	T* data;
@@ -198,6 +247,7 @@ struct LayerParams {
 	LayerType layType;
 	ActivationType actType;
 	MatrixDim matDim;
+	ConvParams convParams;
 	LayerParams(const LayerType lt, const ActivationType at, const MatrixDim dim) :
 		layType(lt),
 		actType(at),

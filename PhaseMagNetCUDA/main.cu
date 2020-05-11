@@ -13,15 +13,13 @@
 
 int main()
 {
-    int num_images = 50000;
-    int num_images_test = 10000;
     int n_ims_train = 50000;
     int n_ims_test = 10000;
     int image_size = 784;
     printf("Loading Data...\n");
     uchar** imdata = read_mnist_images("..\\..\\..\\..\\mnist\\train-images-idx3-ubyte", n_ims_train, image_size);
     uchar* ladata = read_mnist_labels("..\\..\\..\\..\\mnist\\train-labels-idx1-ubyte", n_ims_train);
-    uchar** imdata_test = read_mnist_images("..\\..\\..\\..\\mnist\\t10k-images-idx3-ubyte", n_ims_test, image_size);
+    uchar** imdata_test = read_mnist_images("..\\..\\..\\..\\mnist\\ann_a_advclp_0.05eps-ubyte", n_ims_test, image_size); //t10k-images-idx3-ubyte // ann_a_advclp_0.2eps-ubyte
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels-idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
     PhaseMagNetCUDA net;
@@ -37,15 +35,15 @@ int main()
     net.addLayer(mid); 
     net.addLayer(output);
     net.initialize();*/
-    net.load("testpmnn2.txt");
-    float acc = net.evaluate(num_images_test, imdata_test, ladata_test);
+    net.load("testpmnn2_04.txt");
+    float acc = net.evaluate(n_ims_test, imdata_test, ladata_test, /* verbose */ true);
     printf("Acc: %4.2f \n", acc * 100.0);
-    for (int i = 1; i <= 15; ++i) {
+    for (int i = 1; i <= 5; ++i) {
         printf("Epoch: %d\n", i);
-        net.train(num_images, imdata, ladata, /* verbose */ true);
+        net.train(n_ims_train, imdata, ladata, /* verbose */ true);
         printf("\n");
     }
-    net.save(".\\testpmnn2.txt");
+    net.save(".\\testpmnn2_04.txt");
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 
