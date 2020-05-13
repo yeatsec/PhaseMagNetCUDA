@@ -1,12 +1,8 @@
 
 TODO List / Reminders
 
-	checkpoint work
-
-	Implement convolution inference / training
-	Implement maxpool inference / training
-
-	Implement complex arithmetic
+	fix issue with storing array of weights
+	implement backprop for convolution, maxpool
 
 
 Results:

@@ -33,13 +33,29 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			Layer* elemPtr = (ptr->getElemPtr()); // reference to this element
 			LinkedListNode<Layer>* prevNodePtr = ptr->getPrev();
 			Layer* prevPtr = prevNodePtr->getElemPtr();
-			// rdim=cdim of prev layer, cdim=rdim of this layer
 			MatrixDim matDim;
-			matDim.rdim = prevPtr->layParams.matDim.cdim;
-			matDim.cdim = elemPtr->layParams.matDim.cdim;
-			matDim.size = matDim.rdim * matDim.cdim * sizeof(DTYPE);
-			matDim.stride = matDim.cdim;
-			elemPtr->initializeWeightsPrev(matDim); // weightsprev pointer set
+			size_t numSets = 1;
+			switch (elemPtr->layParams.layType) {
+			case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
+			case LayerType::avgpool:
+			case LayerType::conv: // ensure that the dimensions match up
+				// expect that the dimensions for both the conv filters and activation maps are set
+				assert(elemPtr->layParams.convParams.getNextActDim(prevPtr->layParams.matDim, 
+					sizeof(DTYPE)) == elemPtr->layParams.matDim);
+				matDim = elemPtr->layParams.convParams.filterDim;
+				numSets = elemPtr->layParams.convParams.numFilters;
+				break;
+			default:
+				matDim.adim = 1;
+				matDim.rdim = prevPtr->layParams.matDim.getNumElems();
+				matDim.cdim = elemPtr->layParams.matDim.getNumElems();
+				matDim.size = matDim.rdim * matDim.cdim * sizeof(DTYPE);
+				matDim.astride = matDim.rdim * matDim.cdim;
+				matDim.rstride = matDim.cdim;
+				break;
+			}
+			// currently hardcoded for fully connected
+			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set
 			printf("linked\n");
 			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
@@ -94,7 +110,7 @@ void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar*
 		backwardPropagate(ex);
 		ex.setElem(0, labels[i], 0.0); // prep for next example
 		if (verbose) {
-			printf("Training Progress: %5.2f\t\r", 100.0 * ((float)i) / ((float)num_examples));
+			printf("Training Progress: %5.2f\t\r", 100.0 * ((float)i+1) / ((float)num_examples));
 		}
 		Matrix<DTYPE>& output = getOutput();
 		if (isnan(output.getElem(0, 0))) {
@@ -117,7 +133,7 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 			predictions.setElem(i, j, output.data[j]);
 		}
 		if (verbose) {
-			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)i) / ((float)num_examples));
+			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)i+1) / ((float)num_examples));
 		}
 	}
 	if (verbose)
@@ -147,12 +163,12 @@ float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uc
 
 void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
-	for (size_t i = 0; i < layPtr->layParams.matDim.cdim; ++i) {
+	for (size_t i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
 		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f);
 		DTYPE real = cosf(rad);
 		DTYPE imag = sinf(rad);
-		layPtr->layerDataR.setElem(0, i, real);
-		layPtr->layerDataI.setElem(0, i, imag);
+		layPtr->layerDataR.setElemFlatten(i, real);
+		layPtr->layerDataI.setElemFlatten(i, imag);
 	}
 }
 
@@ -182,11 +198,27 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 		if (ptr->hasNext()) { // only propagate if not last layer
 			Layer* prevLayerPtr = ptr->getElemPtr();
 			Layer* nextLayerPtr = (ptr->getNext())->getElemPtr();
-			vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
-				*(prevLayerPtr->getWeightsNextR()), *(prevLayerPtr->getWeightsNextI()), 
-				nextLayerPtr->layerDataR, nextLayerPtr->layerDataI); // writes results in nextLayerRef.layerdata
-			nextLayerPtr->layerDataR.addMe(nextLayerPtr->biasR); // add the bias to result
-			nextLayerPtr->layerDataI.addMe(nextLayerPtr->biasI);
+			switch (nextLayerPtr->layParams.layType) {
+			case LayerType::conv:
+				complexConvolutionWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams,
+					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
+				break;
+			case LayerType::avgpool:
+				complexAveragePoolWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+					nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
+				break;
+			case LayerType::fc:
+				vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+					*(prevLayerPtr->getWeightsNextR()), *(prevLayerPtr->getWeightsNextI()),
+					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI); // writes results in nextLayerRef.layerdata
+				nextLayerPtr->layerDataR.addMe(nextLayerPtr->biasR); // add the bias to result
+				nextLayerPtr->layerDataI.addMe(nextLayerPtr->biasI);
+				break;
+			default:
+				throw std::logic_error("Not yet implemented\n");
+				break;
+			}
 		}
 	};
 	layers.forEach(propagatefunc);
@@ -206,9 +238,22 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected) {
 			Layer* nextLayerPtr = ptr->getElemPtr(); // iterating backwards, so this appears backwards wrt forwardpropagate
 			//printf("%5.3f %5.3f\n", nextLayerPtr->layerDataR.data[0], nextLayerPtr->layerDataI.data[0]);
 			// update the bias, backpropagate error, update weights
-			complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
-				*(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
-				nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData);
+			switch (nextLayerPtr->layParams.layType) {
+			case LayerType::conv:
+				throw std::logic_error("Not yet implemented\n");
+				break;
+			case LayerType::avgpool:
+				throw std::logic_error("Not yet implemented\n");
+				break;
+			case LayerType::fc:
+				complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
+					*(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
+					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData);
+				break;
+			default:
+				throw std::logic_error("Not yet implemented\n");
+				break;
+			}
 		}
 	};
 	layers.forEachReverse(backpropagatefunc);
@@ -232,8 +277,9 @@ void PhaseMagNetCUDA::resetState(void) {
 template <typename T>
 void writeMatrix(std::ostream& os, const Matrix<T>& mat)
 {
-	os << "matrix " << mat.mdim.rdim << " " << mat.mdim.cdim << " " << mat.mdim.size << " " << mat.mdim.stride << " \n";
-	for (int i = 0; i < mat.mdim.cdim * mat.mdim.rdim; ++i)
+	os << "matrix " << mat.mdim.adim << " " << mat.mdim.rdim << " " << mat.mdim.cdim << " " << mat.mdim.size <<
+		" " << mat.mdim.astride << " " << mat.mdim.rstride << " \n";
+	for (int i = 0; i < mat.mdim.getNumElems(); ++i)
 	{
 		os << mat.data[i] << " ";
 	}
@@ -245,13 +291,13 @@ Matrix<T> readMatrix(std::ifstream& is) {
 	char output[10];
 	is >> output;
 	assert(std::strcmp(output, "matrix") == 0);
-	size_t rdim, cdim, size, stride;
-	is >> rdim >> cdim >> size >> stride;
+	size_t rdim, cdim, size, rstride;
+	is >> rdim >> cdim >> size >> rstride;
 	MatrixDim mdim;
 	mdim.rdim = rdim;
 	mdim.cdim = cdim;
 	mdim.size = size;
-	mdim.stride = stride;
+	mdim.rstride = rstride;
 	Matrix<T> temp(mdim);
 	for (size_t i = 0; i < rdim * cdim; ++i) {
 		is >> temp.data[i];
@@ -272,7 +318,7 @@ Matrix<T> readMatrix(std::ifstream& is) {
 void writeLayer(std::ostream& os, const Layer* layptr) {
 	MatrixDim mdim(layptr->layParams.matDim); // copy
 	os << "layer " << static_cast<int>(layptr->layParams.layType) << " " << static_cast<int>(layptr->layParams.actType) << " "
-		<< mdim.rdim << " " << mdim.cdim << " " << mdim.size << " " << mdim.stride << " \n";
+		<< mdim.adim << " " << mdim.rdim << " " << mdim.cdim << " " << mdim.size << " " << mdim.astride << " " << mdim.rstride << " \n";
 	switch (layptr->layParams.layType) {
 	case LayerType::input:
 		break;
@@ -291,13 +337,13 @@ Layer readLayer(std::ifstream& istrm) {
 	assert(std::strcmp(output, "layer") == 0); // to read a layer, gotta have "layer" first
 	int layType, actType;
 	istrm >> layType >> actType;
-	size_t rdim, cdim, size, stride;
-	istrm >> rdim >> cdim >> size >> stride;
+	size_t rdim, cdim, size, rstride;
+	istrm >> rdim >> cdim >> size >> rstride;
 	MatrixDim mdim;
 	mdim.rdim = rdim;
 	mdim.cdim = cdim;
 	mdim.size = size;
-	mdim.stride = stride;
+	mdim.rstride = rstride;
 	LayerParams lp(static_cast<LayerType>(layType), static_cast<ActivationType>(actType), mdim);
 	Layer lay(lp);
 	switch (lp.layType) {
