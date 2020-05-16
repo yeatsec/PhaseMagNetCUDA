@@ -27,11 +27,11 @@ cudaError_t complexAveragePoolWithCuda(const Matrix<DTYPE>& prevActR, const Matr
 
 cudaError_t complexBackpropWithCuda(const Matrix<DTYPE>& prevActR, const Matrix<DTYPE>& prevActI,
     Matrix<DTYPE>& prevError, Matrix<DTYPE>& weightsR, Matrix<DTYPE>& weightsI, Matrix<DTYPE>& nextBiasR, Matrix<DTYPE>& nextBiasI,
-    const Matrix<DTYPE>& nextActR, const Matrix<DTYPE>& nextActI, const Matrix<DTYPE>& nextError);
+    const Matrix<DTYPE>& nextActR, const Matrix<DTYPE>& nextActI, const Matrix<DTYPE>& nextError, float lrnRate);
 
 cudaError_t complexConvBackpropWithCuda(const Matrix<DTYPE>& prevActR, const Matrix<DTYPE>& prevActI,
-    Matrix<DTYPE>& prevError, Matrix<DTYPE>& weightsR, Matrix<DTYPE>& weightsI, const ConvParams& convParams,
-    const Matrix<DTYPE>& nextActR, const Matrix<DTYPE> nextActI, const Matrix<DTYPE>& nextError);
+    Matrix<DTYPE>& prevError, Matrix<DTYPE>* weightsR, Matrix<DTYPE>* weightsI, const ConvParams& convParams,
+    const Matrix<DTYPE>& nextActR, const Matrix<DTYPE> nextActI, const Matrix<DTYPE>& nextError, float lrnRate);
 
 cudaError_t complexAvgPoolBackpropWithCuda(const Matrix<DTYPE>& prevActR, const Matrix<DTYPE>& prevActI, Matrix<DTYPE>& prevError,
     const ConvParams& convParams, const Matrix<DTYPE>& nextActR, const Matrix<DTYPE> nextActI, const Matrix<DTYPE>& nextError);

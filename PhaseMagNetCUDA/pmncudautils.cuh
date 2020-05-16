@@ -13,21 +13,11 @@
 #define PAD 2
 #define FILTER_DIM 5
 
-#define LRN_RATE 0.0001f
-
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
 #define WGT_HIGH 0.01f
 #define WGT_LOW 0.0f
 
 #define PI 3.14159265f
-
-class NotImplementedException : public std::logic_error
-{
-public:
-	virtual char const* what() const {
-		return "Function not yet implemented";
-	}
-};
 
 enum class LayerType { input, fc, conv, maxpool, avgpool };
 enum class ActivationType { relu, softmax };
@@ -58,6 +48,7 @@ struct MatrixDim {
 struct ConvParams {
 	MatrixDim filterDim;
 	size_t stride, pad, numFilters;
+	ConvParams() : filterDim(), stride(0), pad(0), numFilters(1) {}
 	/*
 		Conv - set stride = 0, pad = 0, filterDim to 5x5, numFilters configurable
 		Avgpool - stride configurable, pad = 0, filterDim.rdim,cdim = stride, filterDim.adim = 1, numFilters must equal that of prev
@@ -157,6 +148,12 @@ struct Matrix {
 		}
 		return temp;
 	}
+	void pointwiseOp(const Matrix<T>& other, T func(const T, const T)) {
+		assert(mdim == other.mdim);
+		for (size_t i = 0; i < getNumElems(); ++i) {
+			data[i] = func(data[i], other.data[i]);
+		}
+	}
 	void addMe(const Matrix<T>& addFrom) {
 		assert(mdim == addFrom.mdim);
 		for (size_t i = 0; i < getNumElems(); ++i) {
@@ -228,9 +225,10 @@ struct CudaMatrix {
 		}
 	}
 	CudaMatrix<T>& operator=(CudaMatrix<T> other) {
-		std::swap(mdim, other.mdim);
-		std::swap(data, other.data);
-		assert(false);
+		if (&other != this) {
+			std::swap(mdim, other.mdim);
+			std::swap(data, other.data);
+		}
 		return *this;
 	}
 	~CudaMatrix() {
@@ -341,9 +339,15 @@ struct Layer {
 		for (unsigned int s = 0; s < numSets; ++s) {
 			weightsPrevR[s] = Matrix<DTYPE>(matDim);
 			weightsPrevI[s] = Matrix<DTYPE>(matDim);
+			DTYPE max_weight;
+			if (numSets > 1) { // indicates convolution
+				max_weight = 2.0 / ((DTYPE)matDim.getNumElems());
+			}
+			else { // indicates FC
+				max_weight = 2.0 / ((DTYPE)matDim.rdim);
+			}
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				DTYPE max_weight = 2.0 / ((DTYPE)matDim.rdim);
 				weightsPrevR[s].data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
 				weightsPrevI[s].data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
 			}

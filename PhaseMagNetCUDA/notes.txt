@@ -1,8 +1,7 @@
 
 TODO List / Reminders
 
-	fix issue with storing array of weights
-	implement backprop for convolution, maxpool
+	
 
 
 Results:

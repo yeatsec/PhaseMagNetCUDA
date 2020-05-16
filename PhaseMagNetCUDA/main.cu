@@ -37,9 +37,13 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     LayerParams avgPoolLayer(LayerType::avgpool, ActivationType::relu, avgPoolMdim, avgPoolParams);
     net.addLayer(avgPoolLayer);
     /* FC 1 */
-    MatrixDim mid_mdim(1, 80, sizeof(DTYPE));
-    LayerParams mid(LayerType::fc, ActivationType::relu, mid_mdim);
-    net.addLayer(mid);
+    MatrixDim mid1_mdim(1, 120, sizeof(DTYPE));
+    LayerParams mid1(LayerType::fc, ActivationType::relu, mid1_mdim);
+    net.addLayer(mid1);
+    /* FC 2 */
+    MatrixDim mid2_mdim(1, 84, sizeof(DTYPE));
+    LayerParams mid2(LayerType::fc, ActivationType::relu, mid2_mdim);
+    net.addLayer(mid2);
     /* FC 2 >>> OUTPUT <<< */
     MatrixDim out_mdim(1, 10, sizeof(DTYPE));
     LayerParams output(LayerType::fc, ActivationType::softmax, out_mdim);
@@ -54,7 +58,7 @@ int main()
     int image_size = 784;
     PhaseMagNetCUDA net;
     //buildNetwork(net);
-    net.load("testpmnn2_04.txt");
+    net.load("convpmnn.txt");
 
     printf("Loading Data...\n");
     uchar** imdata = read_mnist_images("..\\..\\..\\..\\mnist\\train-images-idx3-ubyte", n_ims_train, image_size);
@@ -63,14 +67,15 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels-idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    float acc = net.evaluate(/*n_ims_test*/ 1000, imdata_test, ladata_test, /* verbose */ true);
-    printf("Acc: %4.2f \n", acc * 100.0);
+    float lrnRate = 0.05f;
     for (int i = 1; i <= 1; ++i) {
         printf("Epoch: %d\n", i);
-        net.train(/* n_ims_train */ 1000, imdata, ladata, /* verbose */ true);
+        float acc = net.evaluate(/*n_ims_test*/ 1000, imdata_test, ladata_test, /* verbose */ true);
+        printf("Acc: %4.2f \n", acc * 100.0);
+        net.train(/* n_ims_train */ 50000, imdata, ladata, /* */ lrnRate, /* verbose */ true);
         printf("\n");
     }
-    //net.save(".\\testpmnn2_05.txt");
+    net.save(".\\convpmnn.txt");
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 
