@@ -347,9 +347,9 @@ Matrix<T> readMatrix(std::ifstream& is) {
 
 void writeLayer(std::ostream& os, const Layer* layptr) {
 	MatrixDim mdim(layptr->layParams.matDim); // copy
-	os << "layer " << static_cast<int>(layptr->layParams.layType) << " " << static_cast<int>(layptr->layParams.actType) << " "
-		<< mdim.adim << " " << mdim.rdim << " " << mdim.cdim << " " << mdim.size << " " << mdim.astride << " " << mdim.rstride <<
-		" " << "ConvParams ";
+	os << "layer " << static_cast<int>(layptr->layParams.layType) << " " << static_cast<int>(layptr->layParams.actType) << " ";
+	writeMatrixDim(os, mdim);
+	os << "ConvParams ";
 	writeConvParams(os, layptr->layParams.convParams);
 	os << " \n";
 	switch (layptr->layParams.layType) {
@@ -359,8 +359,8 @@ void writeLayer(std::ostream& os, const Layer* layptr) {
 		writeMatrix(os, layptr->biasR);
 		writeMatrix(os, layptr->biasI);
 		for (int i = 0; i < layptr->layParams.convParams.numFilters; ++i) {
-			writeMatrix(os, *(layptr->weightsPrevR));
-			writeMatrix(os, *(layptr->weightsPrevI));
+			writeMatrix(os, (layptr->weightsPrevR)[i]);
+			writeMatrix(os, (layptr->weightsPrevI)[i]);
 		}
 		break;
 	}
@@ -403,7 +403,7 @@ void PhaseMagNetCUDA::save(const std::string& path) {
 
 	std::fstream of(path, std::ios::out); // do not want to append to existing file. path should be to a new file
 	if (of.is_open()) {
-		of << layers.getSize() << "\n";
+		of << layers.getSize() << " \n";
 		// walk layers and save each layer
 		for (LinkedListNode<Layer>* ptr = layers.getHead(); ptr->hasNext(); ptr = ptr->getNext()) // will end at tail
 			writeLayer(of, ptr->getElemPtr());
