@@ -58,7 +58,7 @@ int main()
     int image_size = 784;
     PhaseMagNetCUDA net;
     //buildNetwork(net);
-    net.load("convpmnn7.txt");
+    net.load("convpmnn_1.txt");
 
     printf("Loading Data...\n");
     uchar** imdata = read_mnist_images("..\\..\\..\\..\\mnist\\train-images-idx3-ubyte", n_ims_train, image_size);
@@ -67,15 +67,15 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels-idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    float lrnRate = 0.0005f;
-    for (int i = 1; i <= 1; ++i) {
+    float lrnRate = 0.05f;
+    for (int i = 1; i <= 100; ++i) {
         printf("Epoch: %d\n", i);
         float acc = net.evaluate(/*n_ims_test*/ 10000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
         net.train(/* n_ims_train */ 50000, imdata, ladata, /* */ lrnRate, /* verbose */ true);
         printf("\n");
     }
-    net.save(".\\convpmnn7.txt");
+    net.save(".\\convpmnn_1.txt");
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 

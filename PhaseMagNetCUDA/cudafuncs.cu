@@ -41,6 +41,10 @@ __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYP
 	dLdPhi = (-1.0f) * ((abswx * abswx_Y * sinf(dPhi)) / absY) * err; // radians
 }
 
+__device__ int getInd(MatrixDim mdim, int row, int col, int aisle = 0) {
+	return (aisle * mdim.astride) + (row * mdim.rstride) + col;
+}
+
 
 // define matrix multiplication kernel w/ corresponding helper function. transpose option on pre-multiply element
 __global__ void vecMatMultKernel(const CudaMatrixArg<DTYPE> Ar, const CudaMatrixArg<DTYPE> Ai,
@@ -129,88 +133,114 @@ cudaError_t vecMatMultWithCuda(const Matrix<DTYPE>& Ar, const Matrix<DTYPE>& Ai,
 __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, const CudaMatrixArg<DTYPE> d_prevActI,
 	const CudaMatrixArg<DTYPE> d_convR, const CudaMatrixArg<DTYPE> d_convI, const ConvParams convParams, const int filterNum,
 	CudaMatrixArg<DTYPE> d_nextActR, CudaMatrixArg<DTYPE> d_nextActI) {
-	// <><><><><><><><> Hardcoded to work with stride=1 <><><><><><><><><>
+	extern __shared__ DTYPE s[];
+	const int sharedInputDim = blockDim.x + (2 * convParams.pad); // == 20 x 20 == 400
+	const int numElemsInput = sharedInputDim * sharedInputDim * d_prevActR.mdim.adim;
+	DTYPE* prevActR_s = s;
+	DTYPE* prevActI_s = &(s[numElemsInput]);
+	DTYPE* filterR_s = &(s[2 * numElemsInput]);
+	DTYPE* filterI_s = &(filterR_s[getNumElems(d_convR.mdim)]);
 	// identify which block, which thread, and location in nextAct
-	int ownNextActRow = threadIdx.y + (blockIdx.y * BLOCK_SIZE);
-	int ownNextActCol = threadIdx.x + (blockIdx.x * BLOCK_SIZE);
-	int prevRowB = d_prevActR.mdim.rdim;
-	int prevColB = d_prevActR.mdim.cdim;
-	bool inPrevAct = ownNextActRow < d_prevActR.mdim.rdim && ownNextActCol < d_prevActR.mdim.cdim;
-	// fetch shared data
-	const int sharedDim = BLOCK_SIZE + (2 * PAD); // == 20 x 20 == 400
-	__shared__ DTYPE prevActR_s[sharedDim][sharedDim];
-	__shared__ DTYPE prevActI_s[sharedDim][sharedDim];
-	// fetch data from shared memory and synchronize
-	// fetch data in own receptive field
-	// <><><><><><><><> Hardcoded for 1 color channel, 5x5 filter <><><><><><><><> 
-	if (threadIdx.x < sharedDim/2 && threadIdx.y < sharedDim/2) {
-		int prevActRow = ownNextActRow - PAD;
-		int prevActCol = ownNextActCol - PAD;
-		// get top left
-		if (prevActRow >= 0 && prevActRow < prevRowB && prevActCol >= 0 && prevActCol < prevColB) {
-			prevActR_s[threadIdx.y][threadIdx.x] = getElem(d_prevActR, prevActRow, prevActCol);
-			prevActI_s[threadIdx.y][threadIdx.x] = getElem(d_prevActI, prevActRow, prevActCol);
+	const int ownNextActRow = threadIdx.y + (blockIdx.y * blockDim.y);
+	const int ownNextActCol = threadIdx.x + (blockIdx.x * blockDim.x);
+	const int flatInd = threadIdx.y * blockDim.x + threadIdx.x;
+	const int prevRowB = d_prevActR.mdim.rdim;
+	const int prevColB = d_prevActR.mdim.cdim;
+	const int pad = convParams.pad;
+	const int chanStride = sharedInputDim * sharedInputDim;
+	// <><><><><><><><><> Hardcoded for stride of 1 <><><><><><><>
+	// fetch actual shared input if your ownNextActRow/col is in bounds.
+	for (int chan = 0; chan < d_prevActR.mdim.adim; ++chan) {
+		if (ownNextActRow < prevRowB && ownNextActCol < prevColB) {
+			prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActR, ownNextActRow, ownNextActCol, chan);
+			prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActI, ownNextActRow, ownNextActCol, chan);
 		}
 		else {
-			prevActR_s[threadIdx.y][threadIdx.x] = 0;
-			prevActI_s[threadIdx.y][threadIdx.x] = 0;
+			prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
+			prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
 		}
-		// get top right
-		prevActCol += (sharedDim / 2);
-		if (prevActRow >= 0 && prevActRow < prevRowB && prevActCol >= 0 && prevActCol < prevColB) {
-			prevActR_s[threadIdx.y][threadIdx.x + (sharedDim/2)] = getElem(d_prevActR, prevActRow, prevActCol);
-			prevActI_s[threadIdx.y][threadIdx.x + (sharedDim/2)] = getElem(d_prevActI, prevActRow, prevActCol);
-		}
-		else {
-			prevActR_s[threadIdx.y][threadIdx.x + (sharedDim / 2)] = 0;
-			prevActI_s[threadIdx.y][threadIdx.x + (sharedDim / 2)] = 0;
-		}
-		// get bottom right
-		prevActRow += (sharedDim / 2);
-		if (prevActRow >= 0 && prevActRow < prevRowB && prevActCol >= 0 && prevActCol < prevColB) {
-			prevActR_s[threadIdx.y + (sharedDim/2)][threadIdx.x + (sharedDim/2)] = getElem(d_prevActR, prevActRow, prevActCol);
-			prevActI_s[threadIdx.y + (sharedDim/2)][threadIdx.x + (sharedDim/2)] = getElem(d_prevActI, prevActRow, prevActCol);
-		}
-		else {
-			prevActR_s[threadIdx.y + (sharedDim / 2)][threadIdx.x + (sharedDim / 2)] = 0;
-			prevActI_s[threadIdx.y + (sharedDim / 2)][threadIdx.x + (sharedDim / 2)] = 0;
-		}
-		// get bottom left
-		prevActCol -= (sharedDim / 2);
-		if (prevActRow >= 0 && prevActRow < prevRowB && prevActCol >= 0 && prevActCol < prevColB) {
-			prevActR_s[threadIdx.y + (sharedDim/2)][threadIdx.x] = getElem(d_prevActR, prevActRow, prevActCol);
-			prevActI_s[threadIdx.y + (sharedDim/2)][threadIdx.x] = getElem(d_prevActI, prevActRow, prevActCol);
-		}
-		else {
-			prevActR_s[threadIdx.y + (sharedDim/2)][threadIdx.x] = 0;
-			prevActI_s[threadIdx.y + (sharedDim/2)][threadIdx.x] = 0;
+		if (flatInd < sharedInputDim) { // get edges
+			for (int pOff = 1; pOff <= pad; ++pOff) {
+				// top apron
+				const int apronRow = blockIdx.y * blockDim.y - pOff;
+				const int apronCol = blockIdx.x * blockDim.x - pad + flatInd;
+				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+					prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
+					prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
+				}
+				else {
+					prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
+					prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
+				}
+			}
+			for (int pOff = 1; pOff <= pad; ++pOff) {
+				// bottom apron
+				const int apronRow = (blockIdx.y + 1) * blockDim.y + pOff - 1;
+				const int apronCol = blockIdx.x * blockDim.x - pad + flatInd;
+				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+					prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
+					prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
+				}
+				else {
+					prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
+					prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
+				}
+			}
+			for (int pOff = 1; pOff <= pad; ++pOff) {
+				// left apron
+				const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
+				const int apronCol = blockIdx.x * blockDim.x - pOff;
+				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+					prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
+					prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
+				}
+				else {
+					prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
+					prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
+				}
+			}
+			for (int pOff = 1; pOff <= pad; ++pOff) {
+				// right apron
+				const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
+				const int apronCol = (blockIdx.x + 1) * blockDim.x + pOff - 1;
+				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+					prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
+					prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
+				}
+				else {
+					prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
+					prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
+				}
+			}
 		}
 	}
 	
 
 	// fetch the filter (assumes dimensions 1xFILTER_DIMxFILTER_DIM)
-	__shared__ DTYPE filterR_s[FILTER_DIM][FILTER_DIM];
-	__shared__ DTYPE filterI_s[FILTER_DIM][FILTER_DIM];
-	if (threadIdx.x < FILTER_DIM && threadIdx.y < FILTER_DIM) {
-		filterR_s[threadIdx.y][threadIdx.x] = getElem(d_convR, threadIdx.y, threadIdx.x);
-		filterI_s[threadIdx.y][threadIdx.x] = getElem(d_convI, threadIdx.y, threadIdx.x);
+	if (threadIdx.x < convParams.filterDim.cdim && threadIdx.y < convParams.filterDim.rdim) {
+		for (int chan = 0; chan < d_convR.mdim.adim; ++chan) {
+			filterR_s[getInd(d_convR.mdim, threadIdx.y, threadIdx.x, chan)] = getElem(d_convR, threadIdx.y, threadIdx.x, chan);
+			filterI_s[getInd(d_convI.mdim, threadIdx.y, threadIdx.x, chan)] = getElem(d_convI, threadIdx.y, threadIdx.x, chan);
+		}
 	}
 	__syncthreads(); // shared input and weights have been fetched. compute the result
 	if (ownNextActCol < d_nextActR.mdim.cdim && ownNextActRow < d_nextActR.mdim.rdim) { // only do this if result matters
 		DTYPE dotValR = 0.0;
 		DTYPE dotValI = 0.0;
-		for (int f_row = 0; f_row < FILTER_DIM; ++f_row) {
-			for (int f_col = 0; f_col < FILTER_DIM; ++f_col) {
-				int s_row = threadIdx.y + f_row;
-				int s_col = threadIdx.x + f_col;
-				DTYPE weightR = filterR_s[f_row][f_col];
-				DTYPE weightI = filterI_s[f_row][f_col];
-				DTYPE actR = prevActR_s[s_row][s_col];
-				DTYPE actI = prevActI_s[s_row][s_col];
-				DTYPE resR, resI;
-				d_cmp_mult(actR, actI, weightR, weightI, resR, resI);
-				dotValR += resR;
-				dotValI += resI;
+		for (int f_chan = 0; f_chan < convParams.filterDim.adim; ++f_chan) {
+			for (int f_row = 0; f_row < convParams.filterDim.rdim; ++f_row) {
+				for (int f_col = 0; f_col < convParams.filterDim.cdim; ++f_col) {
+					int s_row = threadIdx.y + f_row;
+					int s_col = threadIdx.x + f_col;
+					DTYPE weightR = filterR_s[getInd(d_convR.mdim, f_row, f_col, f_chan)];
+					DTYPE weightI = filterI_s[getInd(d_convI.mdim, f_row, f_col, f_chan)];
+					DTYPE actR = prevActR_s[(f_chan * chanStride) + (s_row * sharedInputDim) + f_col];
+					DTYPE actI = prevActI_s[(f_chan * chanStride) + (s_row * sharedInputDim) + f_col];
+					DTYPE resR, resI;
+					d_cmp_mult(actR, actI, weightR, weightI, resR, resI);
+					dotValR += resR;
+					dotValI += resI;
+				}
 			}
 		}
 		setElem(d_nextActR, ownNextActRow, ownNextActCol, dotValR, filterNum);
@@ -239,7 +269,9 @@ cudaError_t complexConvolutionWithCuda(const Matrix<DTYPE>& prevActR, const Matr
 	dim3 gridDim(numColIts, numRowIts); // x, y
 
 	cudaError_t cudaStatus(cudaSuccess);
-
+	const int sharedSize = ((BLOCK_SIZE + (convParams.pad * 2)) *
+		(BLOCK_SIZE + (convParams.pad * 2)) * d_prevActR.mdim.adim // number of elems of shared input
+		+ convR[0].mdim.getNumElems()) * 2 * sizeof(DTYPE); // number of elems of convKernel in bytes, re, im
 	// loop through the activation maps (filters)
 	// call 2D grid of activation map
 	// filter is shared memory
@@ -248,7 +280,7 @@ cudaError_t complexConvolutionWithCuda(const Matrix<DTYPE>& prevActR, const Matr
 		CudaMatrix<DTYPE> d_convR(convR[filterNum]);
 		CudaMatrix<DTYPE> d_convI(convI[filterNum]);
 		
-		complexConvolutionKernel <<< gridDim, bDim >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(),
+		complexConvolutionKernel <<< gridDim, bDim, sharedSize >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(),
 			d_convR.getCudaMatrixArg(), d_convI.getCudaMatrixArg(), convParams, filterNum,
 			d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg());
 
@@ -543,10 +575,6 @@ cudaError_t complexBackpropWithCuda(const Matrix<DTYPE>& prevActR, const Matrix<
 	nextBiasR.fillFromCuda(d_nextBiasR);
 	nextBiasI.fillFromCuda(d_nextBiasI);
 	return cudaStatus;
-}
-
-__device__ int getInd(MatrixDim mdim, int row, int col, int aisle = 0) {
-	return (aisle * mdim.astride) + (row * mdim.rstride) + col;
 }
 
 __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaMatrixArg<DTYPE> d_prevActI, CudaMatrixArg<DTYPE> d_prevError,
