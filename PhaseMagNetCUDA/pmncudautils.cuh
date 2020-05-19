@@ -10,8 +10,6 @@
 
 #define BLOCK_SIZE 16
 #define VEC_SIZE 32
-#define PAD 2
-#define FILTER_DIM 5
 
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
 #define WGT_HIGH 0.01f
@@ -86,6 +84,14 @@ struct Matrix {
 		size_t numElems = getNumElems();
 		data = new T[numElems];
 		std::memcpy(data, toCopy.data, mdim.size);
+	}
+	Matrix(const CudaMatrix<T>& toCopy) : mdim(toCopy.mdim) {
+		size_t numElems = getNumElems();
+		data = new T[numElems];
+		cudaError_t err = cudaMemcpy(data, toCopy.data, mdim.size, cudaMemcpyDeviceToHost);
+		if (err != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy Matrix(CudaMatrix) failed! %d \n", err);
+		}
 	}
 	Matrix<T>& operator=(Matrix<T> other) {
 		if (&other != this) {
@@ -235,11 +241,18 @@ struct CudaMatrix {
 		cudaFree(data);
 		data = nullptr;
 	}
-	CudaMatrixArg<T> getCudaMatrixArg() {
+	CudaMatrixArg<T> getCudaMatrixArg() const { // this is a bit misleading
 		CudaMatrixArg<T> temp;
 		temp.mdim = mdim;
 		temp.data = data;
 		return temp;
+	}
+	void fillFromMatrix(Matrix<DTYPE>& hostMat) {
+		assert(mdim == hostMat.mdim);
+		cudaError_t err = cudaMemcpy(data, hostMat.data, mdim.size, cudaMemcpyHostToDevice);
+		if (err != cudaSuccess) {
+			fprintf(stderr, "cudaMemcpy CudaMatrix::fillFromMatrix failed! %d \n", err);
+		}
 	}
 };
 
@@ -262,15 +275,15 @@ struct LayerParams {
 
 struct Layer {
 	LayerParams layParams;
-	Matrix<DTYPE> layerDataR; // default to n-vector, (1, N)
-	Matrix<DTYPE> layerDataI;
-	Matrix<DTYPE> errorData;
-	Matrix<DTYPE> biasR;
-	Matrix<DTYPE> biasI;
-	Matrix<DTYPE>* weightsPrevR; // list of filters if conv
-	Matrix<DTYPE>* weightsPrevI; // list of filters if conv
-	Matrix<DTYPE>* weightsNextR; // same as prev
-	Matrix<DTYPE>* weightsNextI;
+	CudaMatrix<DTYPE> layerDataR; // default to n-vector, (1, N)
+	CudaMatrix<DTYPE> layerDataI;
+	CudaMatrix<DTYPE> errorData;
+	CudaMatrix<DTYPE> biasR;
+	CudaMatrix<DTYPE> biasI;
+	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
+	CudaMatrix<DTYPE>* weightsPrevI; // list of filters if conv
+	CudaMatrix<DTYPE>* weightsNextR; // same as prev
+	CudaMatrix<DTYPE>* weightsNextI;
 	Layer(const LayerParams& lp) :
 		layParams(lp),
 		layerDataR(lp.matDim),
@@ -284,8 +297,11 @@ struct Layer {
 		weightsNextI(nullptr)
 	{
 		// account for layer
-		biasR.fillRandom(-0.01, 0.01);
-		biasI.fillRandom(-0.01, 0.01);
+		Matrix<DTYPE> temp(biasR.mdim);
+		temp.fillRandom(-0.01, 0.01);
+		biasR.fillFromMatrix(temp);
+		temp.fillRandom(-0.01, 0.01);
+		biasI.fillFromMatrix(temp);
 	}
 	Layer(const Layer& toCopy) :
 		layParams(toCopy.layParams),
@@ -334,11 +350,13 @@ struct Layer {
 	void initializeWeightsPrev(const MatrixDim& matDim, const size_t numSets = 1) {
 		if (numSets == 0)
 			return; /* --- for MaxPool, AvgPool --- */
-		weightsPrevR = new Matrix<DTYPE>[numSets];
-		weightsPrevI = new Matrix<DTYPE>[numSets];
+		weightsPrevR = new CudaMatrix<DTYPE>[numSets];
+		weightsPrevI = new CudaMatrix<DTYPE>[numSets];
+		Matrix<DTYPE> tempR(matDim);
+		Matrix<DTYPE> tempI(matDim);
 		for (unsigned int s = 0; s < numSets; ++s) {
-			weightsPrevR[s] = Matrix<DTYPE>(matDim);
-			weightsPrevI[s] = Matrix<DTYPE>(matDim);
+			weightsPrevR[s] = CudaMatrix<DTYPE>(matDim);
+			weightsPrevI[s] = CudaMatrix<DTYPE>(matDim);
 			DTYPE max_weight;
 			if (numSets > 1) { // indicates convolution
 				max_weight = 2.0 / ((DTYPE)matDim.getNumElems());
@@ -348,25 +366,27 @@ struct Layer {
 			}
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				weightsPrevR[s].data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
-				weightsPrevI[s].data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
+				tempR.data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
+				tempI.data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
 			}
+			weightsPrevR[s].fillFromMatrix(tempR);
+			weightsPrevI[s].fillFromMatrix(tempI);
 		}
 	}
 	void linkWeightsNext(const Layer* const layptr) {
 		weightsNextR = layptr->weightsPrevR;
 		weightsNextI = layptr->weightsPrevI;
 	}
-	Matrix<DTYPE>* getWeightsPrevR() const {
+	CudaMatrix<DTYPE>* getWeightsPrevR() const {
 		return weightsPrevR;
 	}
-	Matrix<DTYPE>* getWeightsPrevI() const {
+	CudaMatrix<DTYPE>* getWeightsPrevI() const {
 		return weightsPrevI;
 	}
-	Matrix<DTYPE>* getWeightsNextR() const {
+	CudaMatrix<DTYPE>* getWeightsNextR() const {
 		return weightsNextR;
 	}
-	Matrix<DTYPE>* getWeightsNextI() const {
+	CudaMatrix<DTYPE>* getWeightsNextI() const {
 		return weightsNextI;
 	}
 };

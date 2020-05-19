@@ -169,20 +169,26 @@ float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uc
 
 void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
+	Matrix<DTYPE> tempR(layPtr->layerDataR.mdim);
+	Matrix<DTYPE> tempI(layPtr->layerDataI.mdim);
 	for (size_t i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
 		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f);
 		DTYPE real = cosf(rad);
 		DTYPE imag = sinf(rad);
-		layPtr->layerDataR.setElemFlatten(i, real);
-		layPtr->layerDataI.setElemFlatten(i, imag);
+		tempR.setElemFlatten(i, real);
+		tempI.setElemFlatten(i, imag);
 	}
+	layPtr->layerDataR.fillFromMatrix(tempR);
+	layPtr->layerDataI.fillFromMatrix(tempI);
 }
 
 Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	Layer* layPtr = layers.getTail()->getElemPtr();
+	Matrix<DTYPE> outR(layPtr->layerDataR);
+	Matrix<DTYPE> outI(layPtr->layerDataI);
 	Matrix<DTYPE> out(layPtr->layParams.matDim);
 	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
-		out.setElem(0, i, abs2(layPtr->layerDataR.getElem(0, i), layPtr->layerDataI.getElem(0, i))); // magnitude
+		out.setElem(0, i, abs2(outR.getElem(0, i), outI.getElem(0, i))); // magnitude
 	}
 	// iterate through output and calculate softmax
 	DTYPE agg = 0.0;
@@ -204,29 +210,33 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 		if (ptr->hasNext()) { // only propagate if not last layer
 			Layer* prevLayerPtr = ptr->getElemPtr();
 			Layer* nextLayerPtr = (ptr->getNext())->getElemPtr();
+			cudaError_t cudaStatus(cudaSuccess);
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::conv:
 				//printf("CONV\n");
-				complexConvolutionWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams,
 					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
 				break;
 			case LayerType::avgpool:
 				//printf("AVG_POOL\n");
-				complexAveragePoolWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+				cudaStatus = complexAveragePoolWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
 					nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
 				break;
 			case LayerType::fc:
 				//printf("FC\n");
-				vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
+				cudaStatus = vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
 					*(prevLayerPtr->getWeightsNextR()), *(prevLayerPtr->getWeightsNextI()),
 					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI); // writes results in nextLayerRef.layerdata
-				nextLayerPtr->layerDataR.addMe(nextLayerPtr->biasR); // add the bias to result
-				nextLayerPtr->layerDataI.addMe(nextLayerPtr->biasI);
+				complexAddBiasWithCuda(nextLayerPtr->layerDataR, nextLayerPtr->layerDataI,
+					nextLayerPtr->biasR, nextLayerPtr->biasI);
 				break;
 			default:
 				throw std::logic_error("Not yet implemented\n");
 				break;
+			}
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "forward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
 			}
 		}
 	};
@@ -242,6 +252,7 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 	// call matmul kernels on transpose weights
 	// call weightUpdate kernels
 	auto backpropagatefunc = [lrnRate](LinkedListNode<Layer>* ptr) {
+		cudaError_t cudaStatus;
 		if (ptr->hasPrev()) {
 			Layer* prevLayerPtr = (ptr->getPrev())->getElemPtr();
 			Layer* nextLayerPtr = ptr->getElemPtr(); // iterating backwards, so this appears backwards wrt forwardpropagate
@@ -249,22 +260,25 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 			// update the bias, backpropagate error, update weights
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::conv:
-				complexConvBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData, 
+				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData, 
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams, 
 					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData, lrnRate);
 				break;
 			case LayerType::avgpool:
-				complexAvgPoolBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
+				cudaStatus = complexAvgPoolBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
 					nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData);
 				break;
 			case LayerType::fc:
-				complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
+				cudaStatus = complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
 					*(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
 					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData, lrnRate);
 				break;
 			default:
 				throw std::logic_error("Not yet implemented\n");
 				break;
+			}
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "backward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
 			}
 		}
 	};
@@ -277,9 +291,9 @@ void PhaseMagNetCUDA::resetState(void) {
 	auto resetfunc = [](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasPrev()) { // input doesn't need to be reset; will be overwritten
 			Layer* elemPtr = ptr->getElemPtr(); // reference to this element
-			elemPtr->layerDataR.fill(0);
-			elemPtr->layerDataI.fill(0);
-			elemPtr->errorData.fill(0);
+			setValueWithCuda(elemPtr->layerDataR, 0);
+			setValueWithCuda(elemPtr->layerDataI, 0);
+			setValueWithCuda(elemPtr->errorData, 0);
 		}
 	};
 	layers.forEach(resetfunc);
@@ -356,11 +370,15 @@ void writeLayer(std::ostream& os, const Layer* layptr) {
 	case LayerType::input:
 		break;
 	default: // has biases and weightsPrev
-		writeMatrix(os, layptr->biasR);
-		writeMatrix(os, layptr->biasI);
+		Matrix<DTYPE> tempBiasR(layptr->biasR);
+		writeMatrix(os, tempBiasR);
+		Matrix<DTYPE> tempBiasI(layptr->biasI);
+		writeMatrix(os, tempBiasI);
 		for (int i = 0; i < layptr->layParams.convParams.numFilters; ++i) {
-			writeMatrix(os, (layptr->weightsPrevR)[i]);
-			writeMatrix(os, (layptr->weightsPrevI)[i]);
+			Matrix<DTYPE> tempR((layptr->weightsPrevR)[i]);
+			Matrix<DTYPE> tempI((layptr->weightsPrevI)[i]);
+			writeMatrix(os, tempR);
+			writeMatrix(os, tempI);
 		}
 		break;
 	}
@@ -385,11 +403,11 @@ Layer readLayer(std::ifstream& istrm) {
 	default:
 		lay.biasR.fillFromMatrix(readMatrix<DTYPE>(istrm));
 		lay.biasI.fillFromMatrix(readMatrix<DTYPE>(istrm));
-		lay.weightsPrevR = new Matrix<DTYPE>[cP.numFilters];
-		lay.weightsPrevI = new Matrix<DTYPE>[cP.numFilters];
+		lay.weightsPrevR = new CudaMatrix<DTYPE>[cP.numFilters];
+		lay.weightsPrevI = new CudaMatrix<DTYPE>[cP.numFilters];
 		for (int i = 0; i < cP.numFilters; ++i) {
-			lay.weightsPrevR[i] = readMatrix<DTYPE>(istrm); // allocated and copied
-			lay.weightsPrevI[i] = readMatrix<DTYPE>(istrm); // allocated and copied
+			lay.weightsPrevR[i] = CudaMatrix<DTYPE>(readMatrix<DTYPE>(istrm));
+			lay.weightsPrevI[i] = CudaMatrix<DTYPE>(readMatrix<DTYPE>(istrm)); // allocated and copied
 		}
 		break;
 	}
