@@ -357,17 +357,17 @@ struct Layer {
 		for (unsigned int s = 0; s < numSets; ++s) {
 			weightsPrevR[s] = CudaMatrix<DTYPE>(matDim);
 			weightsPrevI[s] = CudaMatrix<DTYPE>(matDim);
-			DTYPE max_weight;
+			DTYPE denom;
 			if (numSets > 1) { // indicates convolution
-				max_weight = 2.0 / ((DTYPE)matDim.getNumElems());
+				denom = ((DTYPE)matDim.getNumElems());
 			}
 			else { // indicates FC
-				max_weight = 2.0 / ((DTYPE)matDim.rdim);
+				denom = ((DTYPE)matDim.rdim);
 			}
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				tempR.data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
-				tempI.data[i] = static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX / max_weight));
+				tempR.data[i] = (1.4 / denom) + ((0.6 * static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX))) / denom) - (0.7 / denom);
+				tempI.data[i] = (1.4 / denom) + ((0.6 * static_cast <DTYPE> (rand()) / (static_cast <DTYPE> (RAND_MAX))) / denom) - (0.7 / denom);
 			}
 			weightsPrevR[s].fillFromMatrix(tempR);
 			weightsPrevI[s].fillFromMatrix(tempI);
