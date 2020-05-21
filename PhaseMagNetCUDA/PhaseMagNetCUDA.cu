@@ -132,12 +132,12 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 		forwardPropagate();
 		Matrix<DTYPE>& output = getOutput();
 		//printf("DEBUG %5.3f\n", layers.getHead()->getNext()->getElem().layerDataR.getElem(14, 14));
-		//printf("Output:\t");
+		printf("Output:\t");
 		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
 			predictions.setElem(i, j, output.data[j]);
-			//printf("%3.3f\t", output.data[j]);
+			printf("%3.3f\t", output.data[j]);
 		}
-		//printf("\n");
+		printf("\n");
 		if (verbose) {
 			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)(i+1)) / ((float)num_examples));
 		}
@@ -187,9 +187,12 @@ Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	Matrix<DTYPE> outR(layPtr->layerDataR);
 	Matrix<DTYPE> outI(layPtr->layerDataI);
 	Matrix<DTYPE> out(layPtr->layParams.matDim);
+	//printf("Mag Output: ");
 	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
 		out.setElem(0, i, abs2(outR.getElem(0, i), outI.getElem(0, i))); // magnitude
+		//printf("%5.5f \t", out.getElem(0, i));
 	}
+	//printf("\n");
 	// iterate through output and calculate softmax
 	DTYPE agg = 0.0;
 	for (size_t i = 0; i < out.mdim.cdim; ++i) {
