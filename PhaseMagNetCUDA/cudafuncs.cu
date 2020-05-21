@@ -32,14 +32,16 @@ __device__ const size_t getNumElems(const MatrixDim& mdim) {
 	return mdim.adim * mdim.rdim * mdim.cdim;
 }
 
+
 __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE err, DTYPE& dLdMag, DTYPE& dLdPhi) {
-	DTYPE dPhi = atan2f(wxi, wxr) - atan2f(Yi - wxi, Yr - wxr); // dPhi = ang(wx) - ang(Y-wx)
 	DTYPE abswx = d_abs2(wxr, wxi);
 	DTYPE absY = d_abs2(Yr, Yi);
-	DTYPE abswx_Y = d_abs2(Yr - wxr, Yi - wxi);
-	dLdMag = ((abswx + (abswx_Y * cosf(dPhi))) / absY) * err;
-	dLdPhi = (-1.0f) * ((abswx * abswx_Y * sinf(dPhi)) / absY) * err; // radians
+	DTYPE Y_wxr = Yr - wxr;
+	DTYPE Y_wxi = Yi - wxi;
+	dLdMag = ((abswx + (Y_wxr * wxr / abswx) + (Y_wxi * wxi / abswx)) / absY) * err;
+	dLdPhi = (((Y_wxi * wxr) - (Y_wxr * wxi)) / absY) * err;
 }
+
 
 //__device__ void get_dPhidMag_dPhidPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE err, DTYPE& dLdMag, DTYPE& dLdPhi) {
 //	;
@@ -301,10 +303,10 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevActR, cons
 	assert(d_convR[0].mdim.adim == d_prevActR.mdim.adim);
 
 	dim3 bDim(BLOCK_SIZE, BLOCK_SIZE);
-	size_t numRowIts = d_nextActR.mdim.rdim / BLOCK_SIZE;
+	unsigned int numRowIts = d_nextActR.mdim.rdim / BLOCK_SIZE;
 	if (d_nextActR.mdim.rdim % BLOCK_SIZE != 0)
 		++numRowIts;
-	size_t numColIts = d_nextActR.mdim.cdim / BLOCK_SIZE;
+	unsigned int numColIts = d_nextActR.mdim.cdim / BLOCK_SIZE;
 	if (d_nextActR.mdim.cdim % BLOCK_SIZE != 0)
 		++numColIts;
 	dim3 gridDim(numColIts, numRowIts); // x, y

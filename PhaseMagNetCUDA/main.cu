@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <cstdlib>
 #include <ctime>
+#include <string>
 #include "LinkedList.cuh"
 #include "pmncudautils.cuh"
 #include "cudafuncs.cuh"
@@ -63,11 +64,11 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     /* FC 1 */
     MatrixDim mid1_mdim(1, 120, sizeof(DTYPE));
     LayerParams mid1(LayerType::fc, ActivationType::relu, mid1_mdim);
-    net.addLayer(mid1);
+    //net.addLayer(mid1);
     /* FC 2 */
     MatrixDim mid2_mdim(1, 84, sizeof(DTYPE));
     LayerParams mid2(LayerType::fc, ActivationType::relu, mid2_mdim);
-    net.addLayer(mid2);
+    //net.addLayer(mid2);
     /* FC 2 >>> OUTPUT <<< */
     MatrixDim out_mdim(1, 10, sizeof(DTYPE));
     LayerParams output(LayerType::fc, ActivationType::softmax, out_mdim);
@@ -81,20 +82,21 @@ int main()
     int n_ims_test = 10000;
     int image_size = 784;
     PhaseMagNetCUDA net;
-    buildNetwork(net);
-    //net.load("convpmnn_2.txt");
-
+    //buildNetwork(net);
+    net.load("autosave.txt");
+    char* testName = "..\\..\\..\\..\\mnist\\ann_a_advclp_0.2eps-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
     printf("Loading Data...\n");
+    printf("Test Set: %s \n", testName);
     uchar** imdata = read_mnist_images("..\\..\\..\\..\\mnist\\train-images.idx3-ubyte", n_ims_train, image_size);
     uchar* ladata = read_mnist_labels("..\\..\\..\\..\\mnist\\train-labels.idx1-ubyte", n_ims_train);
-    uchar** imdata_test = read_mnist_images("..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte", n_ims_test, image_size); //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
+    uchar** imdata_test = read_mnist_images(testName, n_ims_test, image_size); 
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    float lrnRate = 0.1f;
+    float lrnRate = 0.01f;
     for (int i = 1; i <= 3; ++i) {
         printf("Epoch: %d\n", i);
-        float acc = net.evaluate(/*n_ims_test*/ 1000, imdata_test, ladata_test, /* verbose */ true);
+        float acc = net.evaluate(/*n_ims_test*/ 10000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
         net.train(/* n_ims_train */ 50000, imdata, ladata, /* */ lrnRate, /* verbose */ true);
         printf("\n");

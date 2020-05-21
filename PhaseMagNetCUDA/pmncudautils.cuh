@@ -38,7 +38,7 @@ struct MatrixDim {
 	bool operator==(const MatrixDim& other) const {
 		return (adim == other.adim && rdim == other.rdim && cdim == other.cdim && size == other.size);
 	}
-	const size_t getNumElems() const {
+	const unsigned int getNumElems() const {
 		return adim * rdim * cdim;
 	}
 };
@@ -364,12 +364,12 @@ struct Layer {
 			else { // indicates FC
 				denom = ((DTYPE) (matDim.rdim));
 			}
-			DTYPE sign;
+			DTYPE sign = 1.0f;
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				sign = 1.0f; //rand() > RAND_MAX / 2 ? sign = ((DTYPE)1.0) : sign = ((DTYPE)-1.0);
+				//rand() > RAND_MAX / 2 ? sign = ((DTYPE)1.0) : sign = ((DTYPE)-1.0);
 				tempR.data[i] = sign * (0.6 + (0.2 * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX))))) / denom;
-				rand() > RAND_MAX / 2 ? sign = ((DTYPE) 1.0) : sign = ((DTYPE) -1.0);
+				//rand() > RAND_MAX / 2 ? sign = ((DTYPE) 1.0) : sign = ((DTYPE) -1.0);
 				tempI.data[i] = sign * (0.6 + (0.2 * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX))))) / denom;
 			}
 			weightsPrevR[s].fillFromMatrix(tempR);

@@ -132,12 +132,12 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 		forwardPropagate();
 		Matrix<DTYPE>& output = getOutput();
 		//printf("DEBUG %5.3f\n", layers.getHead()->getNext()->getElem().layerDataR.getElem(14, 14));
-		printf("Output:\t");
+		//printf("Output:\t");
 		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
 			predictions.setElem(i, j, output.data[j]);
-			printf("%3.3f\t", output.data[j]);
+			//printf("%3.3f\t", output.data[j]);
 		}
-		printf("\n");
+		//printf("\n");
 		if (verbose) {
 			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)(i+1)) / ((float)num_examples));
 		}
