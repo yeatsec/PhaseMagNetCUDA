@@ -364,13 +364,12 @@ struct Layer {
 			else { // indicates FC
 				denom = ((DTYPE) (matDim.rdim));
 			}
-			DTYPE sign = 1.0f;
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				rand() > RAND_MAX / 2 ? sign = ((DTYPE)1.0) : sign = ((DTYPE)-1.0);
-				tempR.data[i] = sign * (0.6 + (0.2 * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX))))) / denom;
-				rand() > RAND_MAX / 2 ? sign = ((DTYPE) 1.0) : sign = ((DTYPE) -1.0);
-				tempI.data[i] = sign * (0.6 + (0.2 * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX))))) / denom;
+				DTYPE ang = 2 * PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+				DTYPE mag = 1.0f / denom;
+				tempR.data[i] = mag * cosf(ang);
+				tempI.data[i] = mag * sinf(ang);
 			}
 			weightsPrevR[s].fillFromMatrix(tempR);
 			weightsPrevI[s].fillFromMatrix(tempI);

@@ -1,18 +1,4 @@
 
 TODO List / Reminders
 
-	
-
-
-Results:
-
-eps		acc		err
-0.0		91.93	8.07
-0.025	90.80	9.20
-0.05	89.48	10.52
-0.075	
-0.1		85.26	14.74
-0.125	
-0.15	78.47	21.53
-0.175	
-0.2		68.55	31.45
+	thoughts - the L2 hyperparameter should be included in the lrnRate multiplication. a good value for ALPHA afterwards would be 0.02

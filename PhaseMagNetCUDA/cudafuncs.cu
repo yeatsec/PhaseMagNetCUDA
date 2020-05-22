@@ -4,6 +4,9 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "cudafuncs.cuh"
+#include <assert.h>
+
+constexpr auto ALPHA = 0.001f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
 	r = cos(phi);
@@ -24,8 +27,8 @@ __device__ DTYPE d_ang2(const DTYPE r, const DTYPE i) { // -> [-pi, pi]
 }
 
 __device__ void d_phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
-	r = cos(phi);
-	i = sin(phi);
+	r = cosf(phi);
+	i = sinf(phi);
 }
 
 __device__ const size_t getNumElems(const MatrixDim& mdim) {
@@ -36,10 +39,19 @@ __device__ const size_t getNumElems(const MatrixDim& mdim) {
 __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE err, DTYPE& dLdMag, DTYPE& dLdPhi) {
 	DTYPE abswx = d_abs2(wxr, wxi);
 	DTYPE absY = d_abs2(Yr, Yi);
-	DTYPE Y_wxr = Yr - wxr;
-	DTYPE Y_wxi = Yi - wxi;
-	dLdMag = ((abswx + (Y_wxr * wxr / abswx) + (Y_wxi * wxi / abswx)) / absY) * err;
-	dLdPhi = (((Y_wxi * wxr) - (Y_wxr * wxi)) / absY) * err;
+	if (abswx > 0 && absY > 0) {
+		DTYPE Y_wxr = Yr - wxr;
+		DTYPE Y_wxi = Yi - wxi;
+		dLdPhi = (((Y_wxi * wxr) - (Y_wxr * wxi)) / absY) * err;
+		dLdMag = ((abswx + (Y_wxr * wxr / abswx) + (Y_wxi * wxi / abswx)) / absY) * err;
+		// rotate wx by complex conjugate of Y
+		d_cmp_mult(wxr, wxi, Yr, -1.0f * Yi, wxr, wxi);
+		dLdPhi = copysignf(dLdPhi, -1.0f * wxi);
+	}
+	else { // ReLU discontinuity
+		dLdMag = 0;
+		dLdPhi = 0;
+	}
 }
 
 
@@ -127,13 +139,15 @@ cudaError_t vecMatMultWithCuda(const CudaMatrix<DTYPE>& d_Ar, const CudaMatrix<D
 
 __global__ void complexAddBiasKernel(CudaMatrixArg<DTYPE> d_ActR, CudaMatrixArg<DTYPE> d_ActI,
 	CudaMatrixArg<DTYPE> d_BiasR, CudaMatrixArg<DTYPE> d_BiasI) {
-	const int flatInd = threadIdx.x;
-	DTYPE pactR = getElemFlatten(d_ActR, flatInd);
-	DTYPE pactI = getElemFlatten(d_ActI, flatInd);
-	DTYPE bR = getElemFlatten(d_BiasR, flatInd);
-	DTYPE bI = getElemFlatten(d_BiasI, flatInd);
-	setElemFlatten(d_ActR, flatInd, pactR + bR);
-	setElemFlatten(d_ActI, flatInd, pactI + bI);
+	const int flatInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	if (flatInd < getNumElems(d_ActR.mdim)) {
+		DTYPE pactR = getElemFlatten(d_ActR, flatInd);
+		DTYPE pactI = getElemFlatten(d_ActI, flatInd);
+		DTYPE bR = getElemFlatten(d_BiasR, flatInd);
+		DTYPE bI = getElemFlatten(d_BiasI, flatInd);
+		setElemFlatten(d_ActR, flatInd, pactR + bR);
+		setElemFlatten(d_ActI, flatInd, pactI + bI);
+	}
 }
 
 // helper function for MatMul
@@ -145,7 +159,11 @@ cudaError_t complexAddBiasWithCuda(CudaMatrix<DTYPE>& d_ActR, CudaMatrix<DTYPE>&
 	assert(d_ActR.mdim == d_BiasR.mdim);
 	cudaError_t cudaStatus = cudaSuccess;
 
-	complexAddBiasKernel <<< 1, d_ActR.mdim.getNumElems() >>> (d_ActR.getCudaMatrixArg(), d_ActI.getCudaMatrixArg(),
+	int numIts = d_ActR.mdim.getNumElems() / VEC_SIZE;
+	if (numIts * VEC_SIZE < d_ActR.mdim.getNumElems())
+		++numIts;
+
+	complexAddBiasKernel <<< numIts, VEC_SIZE >>> (d_ActR.getCudaMatrixArg(), d_ActI.getCudaMatrixArg(),
 		d_BiasR.getCudaMatrixArg(), d_BiasI.getCudaMatrixArg());
 	
 	// Check for any errors launching the kernel
@@ -198,71 +216,71 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, 
 	const int chanStride = sharedInputDim * sharedInputDim;
 	// <><><><><><><><><> Hardcoded for stride of 1 <><><><><><><>
 	// fetch actual shared input if your ownNextActRow/col is in bounds.
-	for (int chan = 0; chan < d_prevActR.mdim.adim; ++chan) {
-		if (ownNextActRow < prevRowB && ownNextActCol < prevColB) {
-			prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActR, ownNextActRow, ownNextActCol, chan);
-			prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActI, ownNextActRow, ownNextActCol, chan);
-		}
-		else {
-			prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
-			prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
-		}
-		if (flatInd < sharedInputDim) { // get edges
-			for (int pOff = 1; pOff <= pad; ++pOff) {
-				// top apron
-				const int apronRow = blockIdx.y * blockDim.y - pOff;
-				const int apronCol = blockIdx.x * blockDim.x - pad + flatInd;
-				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
-					prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
-					prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
-				}
-				else {
-					prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
-					prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
-				}
-			}
-			for (int pOff = 1; pOff <= pad; ++pOff) {
-				// bottom apron
-				const int apronRow = (blockIdx.y + 1) * blockDim.y + pOff - 1;
-				const int apronCol = (blockIdx.x * blockDim.x) - pad + flatInd;
-				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
-					prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
-					prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
-				}
-				else {
-					prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
-					prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
-				}
-			}
-			for (int pOff = 1; pOff <= pad; ++pOff) {
-				// left apron
-				const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
-				const int apronCol = blockIdx.x * blockDim.x - pOff;
-				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
-					prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
-					prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
-				}
-				else {
-					prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
-					prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
-				}
-			}
-			for (int pOff = 1; pOff <= pad; ++pOff) {
-				// right apron
-				const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
-				const int apronCol = (blockIdx.x + 1) * blockDim.x + pOff - 1;
-				if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
-					prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
-					prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
-				}
-				else {
-					prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
-					prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
-				}
-			}
-		}
-	}
-	
+	//for (int chan = 0; chan < d_prevActR.mdim.adim; ++chan) {
+	//	if (ownNextActRow < prevRowB && ownNextActCol < prevColB) {
+	//		prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActR, ownNextActRow, ownNextActCol, chan);
+	//		prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = getElem(d_prevActI, ownNextActRow, ownNextActCol, chan);
+	//	}
+	//	else {
+	//		prevActR_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
+	//		prevActI_s[(chan * chanStride) + ((threadIdx.y + pad) * sharedInputDim) + threadIdx.x + pad] = 0;
+	//	}
+	//	if (flatInd < sharedInputDim) { // get edges
+	//		for (int pOff = 1; pOff <= pad; ++pOff) {
+	//			// top apron
+	//			const int apronRow = blockIdx.y * blockDim.y - pOff;
+	//			const int apronCol = blockIdx.x * blockDim.x - pad + flatInd;
+	//			if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+	//				prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
+	//				prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
+	//			}
+	//			else {
+	//				prevActR_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
+	//				prevActI_s[(chan * chanStride) + ((pad - pOff) * sharedInputDim) + flatInd] = 0;
+	//			}
+	//		}
+	//		for (int pOff = 1; pOff <= pad; ++pOff) {
+	//			// bottom apron
+	//			const int apronRow = (blockIdx.y + 1) * blockDim.y + pOff - 1;
+	//			const int apronCol = (blockIdx.x * blockDim.x) - pad + flatInd;
+	//			if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+	//				prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActR, apronRow, apronCol, chan);
+	//				prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = getElem(d_prevActI, apronRow, apronCol, chan);
+	//			}
+	//			else {
+	//				prevActR_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
+	//				prevActI_s[(chan * chanStride) + ((pad + blockDim.y + pOff) * sharedInputDim) + flatInd] = 0;
+	//			}
+	//		}
+	//		for (int pOff = 1; pOff <= pad; ++pOff) {
+	//			// left apron
+	//			const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
+	//			const int apronCol = blockIdx.x * blockDim.x - pOff;
+	//			if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+	//				prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
+	//				prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
+	//			}
+	//			else {
+	//				prevActR_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
+	//				prevActI_s[(chan * chanStride) + ((flatInd) * sharedInputDim) + (pad - pOff)] = 0;
+	//			}
+	//		}
+	//		for (int pOff = 1; pOff <= pad; ++pOff) {
+	//			// right apron
+	//			const int apronRow = blockIdx.y * blockDim.y - pad + flatInd;
+	//			const int apronCol = (blockIdx.x + 1) * blockDim.x + pOff - 1;
+	//			if (apronRow >= 0 && apronRow < prevRowB && apronCol >= 0 && apronCol < prevColB) {
+	//				prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActR, apronRow, apronCol, chan);
+	//				prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = getElem(d_prevActI, apronRow, apronCol, chan);
+	//			}
+	//			else {
+	//				prevActR_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
+	//				prevActI_s[(chan * chanStride) + ((flatInd)*sharedInputDim) + (pad + blockDim.x + pOff)] = 0;
+	//			}
+	//		}
+	//	}
+	//}
+	//
 
 	// fetch the filter (assumes dimensions 1xFILTER_DIMxFILTER_DIM)
 	if (threadIdx.x < convParams.filterDim.cdim && threadIdx.y < convParams.filterDim.rdim) {
@@ -280,10 +298,16 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, 
 				for (int f_col = 0; f_col < convParams.filterDim.cdim; ++f_col) {
 					int s_row = threadIdx.y + f_row;
 					int s_col = threadIdx.x + f_col;
+					int tmpRow = ownNextActRow - pad + f_row;
+					int tmpCol = ownNextActCol - pad + f_col;
 					DTYPE weightR = filterR_s[getInd(d_convR.mdim, f_row, f_col, f_chan)];
 					DTYPE weightI = filterI_s[getInd(d_convI.mdim, f_row, f_col, f_chan)];
-					DTYPE actR = prevActR_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];// from f_col to s_col
-					DTYPE actI = prevActI_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];
+					DTYPE actR = 0;
+					DTYPE actI = 0;
+					if (tmpRow >= 0 && tmpRow < d_prevActR.mdim.rdim && tmpCol >= 0 && tmpCol < d_prevActR.mdim.cdim) {
+						actR = getElem(d_prevActR, tmpRow, tmpCol, f_chan); // prevActR_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];// from f_col to s_col
+						actI = getElem(d_prevActI, tmpRow, tmpCol, f_chan); // prevActI_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];
+					}
 					DTYPE resR, resI;
 					d_cmp_mult(actR, actI, weightR, weightI, resR, resI);
 					dotValR += resR;
@@ -401,59 +425,6 @@ cudaError_t complexAveragePoolWithCuda(const CudaMatrix<DTYPE>& d_prevActR, cons
 	return cudaStatus;
 }
 
-//__global__ void updateWeightsKernel(const CudaMatrixArg<DTYPE> prevActs, CudaMatrixArg<DTYPE> weights, const CudaMatrixArg<DTYPE> nextError, float lrnRate) {
-//	// get block column
-//	// get thread column
-//	size_t col = threadIdx.x + (blockIdx.x * VEC_SIZE); // col location on nextError
-//	__shared__ DTYPE prevActs_s[VEC_SIZE];
-//	unsigned int num_prevActs_its = prevActs.mdim.cdim / VEC_SIZE;
-//	if (prevActs.mdim.cdim % VEC_SIZE != 0)
-//		++num_prevActs_its;
-//	for (unsigned int prevActs_it = 0; prevActs_it < num_prevActs_its; ++prevActs_it) {
-//		unsigned int prevActs_col = prevActs_it * VEC_SIZE + threadIdx.x;
-//		if (prevActs_col < prevActs.mdim.cdim)
-//			prevActs_s[threadIdx.x] = getElem(prevActs, 0, prevActs_col);
-//		__syncthreads(); // wait until shared memory is initialized before computation starts
-//		if (col < nextError.mdim.cdim) {
-//			for (unsigned int up_it = 0; up_it < VEC_SIZE; ++up_it) {
-//				unsigned int weights_row_ind = prevActs_it * VEC_SIZE + up_it;
-//				if (weights_row_ind < weights.mdim.rdim) {
-//					DTYPE weightVal = getElem(weights, weights_row_ind, col);
-//					weightVal += lrnRate * prevActs_s[up_it] * getElem(nextError, 0, col);
-//					setElem(weights, weights_row_ind, col, weightVal);
-//				}
-//			}
-//		}
-//		__syncthreads(); // finish computation before next sharedmem is loaded
-//	}
-//
-//}
-
-//cudaError_t updateWeightsWithCuda(const CudaMatrix<DTYPE>& prevActs, Matrix<DTYPE>& weights, const Matrix<DTYPE>& nextError, float lrnRate) {
-//
-//	// check that dimensions fit
-//	assert(prevActs.mdim.getNumElems() == weights.mdim.rdim && prevActs.mdim.rdim == nextError.mdim.rdim && weights.mdim.cdim == nextError.mdim.cdim);
-//
-//	CudaMatrix<DTYPE> d_prevActs(prevActs);
-//	CudaMatrix<DTYPE> d_weights(weights);
-//	CudaMatrix<DTYPE> d_nextError(nextError);
-//
-//	unsigned int num_vecs = d_nextError.mdim.cdim / VEC_SIZE;
-//	if (d_nextError.mdim.cdim % VEC_SIZE != 0)
-//		++num_vecs;
-//	updateWeightsKernel <<< num_vecs, VEC_SIZE >>> (d_prevActs.getCudaMatrixArg(), d_weights.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), lrnRate);
-//
-//	cudaError_t cudaStatus = cudaGetLastError();
-//
-//	if (cudaStatus != cudaSuccess) {
-//		// Check for any errors launching the kernel
-//		fprintf(stderr, "updateWeightsKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-//	}
-//
-//	weights.fillFromCuda(d_weights);
-//
-//	return cudaStatus; // is this checked?
-//}
 
 __global__ void complexBackpropKernel(const CudaMatrixArg<DTYPE> prevActR, const CudaMatrixArg<DTYPE> prevActI,
 	CudaMatrixArg<DTYPE> prevError, CudaMatrixArg<DTYPE> weightsR, CudaMatrixArg<DTYPE> weightsI,
@@ -500,8 +471,13 @@ __global__ void complexBackpropKernel(const CudaMatrixArg<DTYPE> prevActR, const
 				DTYPE dLdPhiR, dLdPhiI;
 				d_phi_to_comp(dLdPhi, dLdPhiR, dLdPhiI);
 				// multiply into result
-				wr *= (dLdMag + 1.0);
-				wi *= (dLdMag + 1.0);
+				// CHANGE - scale magnitude change by current magnitude
+				DTYPE absw = d_abs2(wr, wi);
+				if (absw == 0) {
+					absw = 1.0f;
+				}
+				wr *= ((dLdMag * (1.0f - ALPHA)) / absw + 1.0) - ALPHA;
+				wi *= ((dLdMag * (1.0f - ALPHA)) / absw + 1.0) - ALPHA;
 				d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
 				setElem(weightsR, prevError_col, wgt_col, wr);
 				setElem(weightsI, prevError_col, wgt_col, wi);
@@ -533,8 +509,13 @@ __global__ void complexUpdateBiasKernel(const CudaMatrixArg<DTYPE> actR, const C
 		DTYPE dLdPhiR, dLdPhiI;
 		d_phi_to_comp(dLdPhi, dLdPhiR, dLdPhiI);
 		// multiply into result
-		wr *= (dLdMag + 1.0f);
-		wi *= (dLdMag + 1.0f);
+		// CHANGE - scale magnitude change by current magnitude
+		DTYPE absw = d_abs2(wr, wi);
+		if (absw == 0) {
+			absw = 1.0f;
+		}
+		wr *= ((dLdMag * (1.0f - ALPHA)) / absw + 1.0f) - ALPHA;
+		wi *= ((dLdMag * (1.0f - ALPHA)) / absw + 1.0f) - ALPHA;
 		d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
 		setElemFlatten(biasR, col, wr);
 		setElemFlatten(biasI, col, wi);
@@ -660,7 +641,7 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaM
 }
 
 __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI,
-	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const float lrnRate) {
+	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const float lrnRate, const unsigned int receptiveFieldSize) {
 
 	DTYPE wR = getElem(d_weightsR, threadIdx.y, threadIdx.x, threadIdx.z);
 	DTYPE wI = getElem(d_weightsI, threadIdx.y, threadIdx.x, threadIdx.z);
@@ -669,8 +650,14 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 	DTYPE ePhiR, ePhiI;
 	d_phi_to_comp(ePhi, ePhiR, ePhiI);
 	// stretch weights by dMag
-	wR *= (eMag + 1.0);
-	wI *= (eMag + 1.0);
+	// CHANGE - scale magnitude change by current magnitude
+	DTYPE absw = d_abs2(wR, wI);
+	DTYPE scale = absw * ((DTYPE)receptiveFieldSize);
+	if (scale == 0.0f) {
+		scale = 1.0f;
+	}
+	wR *= ((eMag * (1.0f - ALPHA)) / scale + 1.0f) - ALPHA;
+	wI *= ((eMag * (1.0f - ALPHA)) / scale + 1.0f) - ALPHA;
 	// rotate weights by dPhi
 	d_cmp_mult(wR, wI, ePhiR, ePhiI, wR, wI);
 	// write back
@@ -725,7 +712,7 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, con
 		MatrixDim fDim(convParams.filterDim);
 		// filter error needs to be reincorporated into weights
 		complexUpdateKernelWeights <<< 1, dim3(fDim.cdim, fDim.rdim, fDim.adim) >>> (d_weightsR[actMap].getCudaMatrixArg(),
-			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate);
+			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate, d_prevActR.mdim.rdim * d_prevActR.mdim.cdim);
 		
 		cudaStatus = cudaGetLastError();
 

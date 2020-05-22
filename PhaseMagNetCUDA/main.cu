@@ -26,7 +26,7 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     conv1.numFilters = 6;
     MatrixDim convMdim(conv1.getNextActDim(in_mdim, sizeof(DTYPE)));
     LayerParams convLayer(LayerType::conv, ActivationType::relu, convMdim, conv1);
-    net.addLayer(convLayer);
+    //net.addLayer(convLayer);
     printf("Conv1 Created\n");
     /* Average Pooling */
     ConvParams avgPoolParams;
@@ -37,7 +37,7 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     avgPoolParams.numFilters = 6;
     MatrixDim avgPoolMdim(avgPoolParams.getNextActDim(convMdim, sizeof(DTYPE)));
     LayerParams avgPoolLayer(LayerType::avgpool, ActivationType::relu, avgPoolMdim, avgPoolParams);
-    net.addLayer(avgPoolLayer);
+    //net.addLayer(avgPoolLayer);
     printf("AvgPool Created\n");
     /* Conv 2 */
     ConvParams conv2;
@@ -48,7 +48,7 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     conv2.stride = 1; // conv only supports stride of 1
     MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
     LayerParams convLayer2(LayerType::conv, ActivationType::relu, convMdim2, conv2);
-    net.addLayer(convLayer2);
+    //net.addLayer(convLayer2);
     printf("Conv2 Layer Created\n");
     /* Average Pooling 2 */
     ConvParams avgPoolParams2;
@@ -59,7 +59,7 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     avgPoolParams2.numFilters = 16;
     MatrixDim avgPoolMdim2(avgPoolParams2.getNextActDim(convMdim2, sizeof(DTYPE)));
     LayerParams avgPoolLayer2(LayerType::avgpool, ActivationType::relu, avgPoolMdim2, avgPoolParams2);
-    net.addLayer(avgPoolLayer2);
+    //net.addLayer(avgPoolLayer2);
     printf("AvgPool 2 Created\n");
     /* FC 1 */
     MatrixDim mid1_mdim(1, 120, sizeof(DTYPE));
@@ -82,8 +82,8 @@ int main()
     int n_ims_test = 10000;
     int image_size = 784;
     PhaseMagNetCUDA net;
-    buildNetwork(net);
-    //net.load("autosave.txt");
+    //buildNetwork(net);
+    net.load("autosave.txt");
     char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
     printf("Loading Data...\n");
     printf("Test Set: %s \n", testName);
@@ -93,16 +93,16 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    float lrnRate = 0.01f;
+    float lrnRate = 0.02f;
     for (int i = 1; i <= 5; ++i) {
         printf("Epoch: %d\n", i);
         float acc = net.evaluate(/*n_ims_test*/ 1000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
         net.train(/* n_ims_train */ 50000, imdata, ladata, /* */ lrnRate, /* verbose */ true);
         printf("\n");
-        net.save("test.txt");
+        net.save("autosave.txt");
     }
-    net.save(".\\lenet5.txt");
+    net.save(".\\slp.txt");
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 

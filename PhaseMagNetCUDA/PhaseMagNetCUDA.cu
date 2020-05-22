@@ -172,7 +172,7 @@ void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Matrix<DTYPE> tempR(layPtr->layerDataR.mdim);
 	Matrix<DTYPE> tempI(layPtr->layerDataI.mdim);
 	for (size_t i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
-		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f);
+		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f) - PI / 2;
 		DTYPE real = cosf(rad);
 		DTYPE imag = sinf(rad);
 		tempR.setElemFlatten(i, real);
@@ -241,8 +241,30 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "forward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
 			}
+			/*Matrix<DTYPE> nextR(nextLayerPtr->layerDataR);
+			Matrix<DTYPE> nextI(nextLayerPtr->layerDataI);
+			Matrix<DTYPE> wgtR(nextLayerPtr->weightsPrevR[0]);
+			Matrix<DTYPE> wgtI(nextLayerPtr->weightsPrevI[0]);
+			for (int i = 0; i < wgtR.getNumElems(); ++i) {
+				if (isnan(wgtR.data[i]) || isnan(wgtI.data[i])) {
+					printf("It: %d \t Re(%5.5f) Im(%5.5f) \n", i, wgtR.data[i], wgtI.data[i]);
+				}
+			}
+			printf("Activation\n");
+			for (int i = 0; i < nextR.getNumElems(); ++i) {
+				printf("Re(%5.5f) Im(%5.5f) ", nextR.data[i], nextI.data[i]);
+			}
+			printf("\n");*/
 		}
 	};
+	// print the input
+	//Matrix<DTYPE> inpR(layers.getHead()->getElemPtr()->layerDataR);
+	//Matrix<DTYPE> inpI(layers.getHead()->getElemPtr()->layerDataI);
+	/*printf("Input\n");
+	for (int i = 0; i < inpR.mdim.getNumElems(); ++i) {
+		printf("Re(%5.5f) Im(%5.5f) ", inpR.data[i], inpI.data[i]);
+	}
+	printf("\n");*/
 	layers.forEach(propagatefunc);
 }
 
@@ -259,7 +281,12 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 		if (ptr->hasPrev()) {
 			Layer* prevLayerPtr = (ptr->getPrev())->getElemPtr();
 			Layer* nextLayerPtr = ptr->getElemPtr(); // iterating backwards, so this appears backwards wrt forwardpropagate
-			//printf("%5.3f %5.3f\n", nextLayerPtr->layerDataR.data[0], nextLayerPtr->layerDataI.data[0]);
+			/* Print the error at each neuron in next*/
+			/*printf("Error: \n");
+			Matrix<DTYPE> errMat(nextLayerPtr->errorData);
+			for (int i = 0; i < errMat.mdim.getNumElems(); ++i)
+				printf("%5.5f ", errMat.data[i]);
+			printf("\n");*/
 			// update the bias, backpropagate error, update weights
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::conv:
