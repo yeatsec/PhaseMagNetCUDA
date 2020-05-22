@@ -9,6 +9,10 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
+// #define PRINT_WEIGHT
+// #define PRINT_ACT
+// #define PRINT_MAG
+
 
 /*
 	Convention: Activation A<1, N>, Weights <N, M>, Activation <1, M>
@@ -187,12 +191,17 @@ Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	Matrix<DTYPE> outR(layPtr->layerDataR);
 	Matrix<DTYPE> outI(layPtr->layerDataI);
 	Matrix<DTYPE> out(layPtr->layParams.matDim);
-	//printf("Mag Output: ");
+	
 	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
 		out.setElem(0, i, abs2(outR.getElem(0, i), outI.getElem(0, i))); // magnitude
-		//printf("%5.5f \t", out.getElem(0, i));
 	}
-	//printf("\n");
+#ifdef PRINT_MAG
+	printf("Mag Output: ");
+	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
+		printf("%5.5f \t", out.getElem(0, i));
+	}
+	printf("\n");
+#endif // PRINT_MAG
 	// iterate through output and calculate softmax
 	DTYPE agg = 0.0;
 	for (size_t i = 0; i < out.mdim.cdim; ++i) {
@@ -241,8 +250,7 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "forward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
 			}
-			/*Matrix<DTYPE> nextR(nextLayerPtr->layerDataR);
-			Matrix<DTYPE> nextI(nextLayerPtr->layerDataI);
+#ifdef PRINT_WEIGHT
 			Matrix<DTYPE> wgtR(nextLayerPtr->weightsPrevR[0]);
 			Matrix<DTYPE> wgtI(nextLayerPtr->weightsPrevI[0]);
 			for (int i = 0; i < wgtR.getNumElems(); ++i) {
@@ -250,11 +258,14 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 					printf("It: %d \t Re(%5.5f) Im(%5.5f) \n", i, wgtR.data[i], wgtI.data[i]);
 				}
 			}
+#endif // PRINT_WEIGHT
+#ifdef PRINT_ACT
 			printf("Activation\n");
 			for (int i = 0; i < nextR.getNumElems(); ++i) {
 				printf("Re(%5.5f) Im(%5.5f) ", nextR.data[i], nextI.data[i]);
 			}
-			printf("\n");*/
+			printf("\n");
+#endif // PRINT_ACT
 		}
 	};
 	// print the input

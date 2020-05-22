@@ -102,7 +102,7 @@ int main()
         printf("\n");
         net.save("autosave.txt");
     }
-    net.save(".\\slp.txt");
+    net.save(".\\mlp.txt");
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 
