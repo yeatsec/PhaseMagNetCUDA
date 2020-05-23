@@ -6,7 +6,7 @@
 #include "cudafuncs.cuh"
 #include <assert.h>
 
-constexpr auto ALPHA = 0.001f;
+constexpr auto ALPHA = 0.002f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
@@ -481,18 +481,15 @@ __global__ void complexBackpropKernel(const CudaMatrixArg<DTYPE> prevActR, const
 				// multiply into result
 				// CHANGE - scale magnitude change by current magnitude
 				DTYPE absw = d_abs2(wr, wi);
-				if (absw == 0) {
-					absw = 1.0f;
+				if (absw > 0) {
+					dLdMag *= d_abs2(xr, xi); // wr = (((dLdMag * (1.0f - ALPHA)) - ALPHA) * wr / absw * lrnRate) + wr;
+					DTYPE absY = d_abs2(Yr, Yi);
+					wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
+					wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
+					d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
+					setElem(weightsR, prevError_col, wgt_col, wr);
+					setElem(weightsI, prevError_col, wgt_col, wi);
 				}
-				dLdMag *= d_abs2(xr, xi); // wr = (((dLdMag * (1.0f - ALPHA)) - ALPHA) * wr / absw * lrnRate) + wr;
-				DTYPE absY = d_abs2(Yr, Yi);
-				wr += ((dLdMag - ALPHA * absY) * (wr / absw)) * lrnRate;
-				wi += ((dLdMag - ALPHA * absY) * (wi / absw)) * lrnRate;
-				//wr *= (((dLdMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-				//wi *= (((dLdMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-				d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
-				setElem(weightsR, prevError_col, wgt_col, wr);
-				setElem(weightsI, prevError_col, wgt_col, wi);
 			}
 		}
 		__syncthreads();
@@ -522,17 +519,16 @@ __global__ void complexUpdateBiasKernel(const CudaMatrixArg<DTYPE> actR, const C
 		// multiply into result
 		// CHANGE - scale magnitude change by current magnitude
 		DTYPE absw = d_abs2(wr, wi);
-		if (absw == 0) {
-			absw = 1.0f;
+		if (absw > 0) {
+			// magnitude of input is 1
+			DTYPE absY = d_abs2(Yr, Yi);
+			wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
+			wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
+			d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
+			setElemFlatten(biasR, col, wr);
+			setElemFlatten(biasI, col, wi);
 		}
-		DTYPE absY = d_abs2(Yr, Yi);
-		wr += ((dLdMag - ALPHA * absY) * (wr / absw)) * lrnRate;
-		wi += ((dLdMag - ALPHA * absY) * (wi / absw)) * lrnRate;
-		//wr *= (((dLdMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-		//wi *= (((dLdMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-		d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
-		setElemFlatten(biasR, col, wr);
-		setElemFlatten(biasI, col, wi);
+		
 	}
 }
 
@@ -664,17 +660,16 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 	// stretch weights by dMag
 	// CHANGE - scale magnitude change by current magnitude
 	DTYPE absw = d_abs2(wR, wI);
-	DTYPE scale = absw * ((DTYPE)receptiveFieldSize);
-	if (scale == 0.0f) {
-		scale = 1.0f;
+	if (absw > 0.0f) {
+		eMag /= ((DTYPE)receptiveFieldSize);
+		wR += ((eMag - ALPHA * absw) * (wR / absw)) * lrnRate;
+		wR += ((eMag - ALPHA * absw) * (wI / absw)) * lrnRate;
+		// rotate weights by dPhi
+		d_cmp_mult(wR, wI, ePhiR, ePhiI, wR, wI);
+		// write back
+		setElem(d_weightsR, threadIdx.y, threadIdx.x, wR, threadIdx.z);
+		setElem(d_weightsI, threadIdx.y, threadIdx.x, wI, threadIdx.z);
 	}
-	wR *= (((eMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-	wI *= (((eMag * (1.0f - ALPHA)) / absw - ALPHA) * lrnRate) + 1.0f;
-	// rotate weights by dPhi
-	d_cmp_mult(wR, wI, ePhiR, ePhiI, wR, wI);
-	// write back
-	setElem(d_weightsR, threadIdx.y, threadIdx.x, wR, threadIdx.z);
-	setElem(d_weightsI, threadIdx.y, threadIdx.x, wI, threadIdx.z);
 }
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI,
