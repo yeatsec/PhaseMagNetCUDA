@@ -7,7 +7,7 @@
 #include <assert.h>
 
 constexpr auto ALPHA = 0.001f;
-constexpr auto GRADIENT_CLIP = 10.0f;
+constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
 	r = cos(phi);
@@ -510,7 +510,7 @@ __global__ void complexBackpropKernel(const CudaMatrixArg<DTYPE> prevActR, const
 					DTYPE absY = d_abs2(Yr, Yi);
 					wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
 					wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
-					//d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
+					d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
 					setElem(weightsR, prevError_col, wgt_col, wr);
 					setElem(weightsI, prevError_col, wgt_col, wi);
 				}
@@ -550,7 +550,7 @@ __global__ void complexUpdateBiasKernel(const CudaMatrixArg<DTYPE> actR, const C
 			DTYPE absY = d_abs2(Yr, Yi);
 			wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
 			wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
-			//d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
+			d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
 			setElemFlatten(biasR, col, wr);
 			setElemFlatten(biasI, col, wi);
 		}
