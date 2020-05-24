@@ -277,7 +277,8 @@ struct Layer {
 	LayerParams layParams;
 	CudaMatrix<DTYPE> layerDataR; // default to n-vector, (1, N)
 	CudaMatrix<DTYPE> layerDataI;
-	CudaMatrix<DTYPE> errorData;
+	CudaMatrix<DTYPE> errorDataMag;
+	CudaMatrix<DTYPE> errorDataAng;
 	CudaMatrix<DTYPE> biasR;
 	CudaMatrix<DTYPE> biasI;
 	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
@@ -288,7 +289,8 @@ struct Layer {
 		layParams(lp),
 		layerDataR(lp.matDim),
 		layerDataI(lp.matDim),
-		errorData(lp.matDim),
+		errorDataMag(lp.matDim),
+		errorDataAng(lp.matDim),
 		biasR(lp.matDim),
 		biasI(lp.matDim),
 		weightsPrevR(nullptr),
@@ -307,7 +309,8 @@ struct Layer {
 		layParams(toCopy.layParams),
 		layerDataR(toCopy.layerDataR),
 		layerDataI(toCopy.layerDataI),
-		errorData(toCopy.errorData),
+		errorDataMag(toCopy.errorDataMag),
+		errorDataAng(toCopy.errorDataAng),
 		biasR(toCopy.biasR),
 		biasI(toCopy.biasI),
 		weightsPrevR(toCopy.weightsPrevR), // shallow copy
@@ -322,7 +325,8 @@ struct Layer {
 			std::swap(layParams, other.layParams);
 			std::swap(layerDataR, other.layerDataR);
 			std::swap(layerDataI, other.layerDataI);
-			std::swap(errorData, other.errorData);
+			std::swap(errorDataMag, other.errorDataMag);
+			std::swap(errorDataAng, other.errorDataAng);
 			std::swap(biasR, other.biasR);
 			std::swap(biasI, other.biasI);
 			weightsPrevR = other.weightsPrevR; // shallow copy
@@ -366,7 +370,7 @@ struct Layer {
 			}
 			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 				// random number generator to initialize weights
-				DTYPE ang = 2 * PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+				DTYPE ang = PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
 				DTYPE mag = 1.0f / denom;
 				tempR.data[i] = mag * cosf(ang);
 				tempI.data[i] = mag * sinf(ang);

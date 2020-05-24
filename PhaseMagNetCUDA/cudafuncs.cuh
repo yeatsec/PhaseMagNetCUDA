@@ -31,14 +31,15 @@ cudaError_t complexAveragePoolWithCuda(const CudaMatrix<DTYPE>& d_prevActR, cons
 //    const CudaMatrixArg<DTYPE> nextActR, const CudaMatrixArg<DTYPE> nextActI, const CudaMatrixArg<DTYPE> nextError);
 
 cudaError_t complexBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI,
-    CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>& d_weightsR, CudaMatrix<DTYPE>& d_weightsI, CudaMatrix<DTYPE>& d_nextBiasR, CudaMatrix<DTYPE>& d_nextBiasI,
-    const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE>& d_nextActI, const CudaMatrix<DTYPE>& d_nextError, float lrnRate);
+    CudaMatrix<DTYPE>& d_prevErrorMag, CudaMatrix<DTYPE>& d_prevErrorAng, CudaMatrix<DTYPE>& d_weightsR, CudaMatrix<DTYPE>& d_weightsI, CudaMatrix<DTYPE>& d_nextBiasR, CudaMatrix<DTYPE>& d_nextBiasI,
+    const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE>& d_nextActI, const CudaMatrix<DTYPE>& d_nextErrorMag, const CudaMatrix<DTYPE>& d_nextErrorAng, float lrnRate);
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI,
-    CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, const ConvParams& convParams,
-    const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE> d_nextActI, const CudaMatrix<DTYPE>& d_nextError, float lrnRate);
+    CudaMatrix<DTYPE>& d_prevErrorMag, CudaMatrix<DTYPE>& d_prevErrorAng, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, const ConvParams& convParams,
+    const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE> d_nextActI, const CudaMatrix<DTYPE>& d_nextErrorMag, const CudaMatrix<DTYPE>& d_nextErrorAng, float lrnRate);
 
-cudaError_t complexAvgPoolBackpropWithCuda(const CudaMatrix<DTYPE>& prevActR, const CudaMatrix<DTYPE>& prevActI, CudaMatrix<DTYPE>& prevError,
-    const ConvParams& convParams, const CudaMatrix<DTYPE>& nextActR, const CudaMatrix<DTYPE> nextActI, const CudaMatrix<DTYPE>& nextError);
+cudaError_t complexAvgPoolBackpropWithCuda(const CudaMatrix<DTYPE>& prevActR, const CudaMatrix<DTYPE>& prevActI, CudaMatrix<DTYPE>& prevErrorMag,
+    CudaMatrix<DTYPE>& prevErrorAng, const ConvParams& convParams, const CudaMatrix<DTYPE>& nextActR, const CudaMatrix<DTYPE> nextActI,
+    const CudaMatrix<DTYPE>& nextErrorMag, const CudaMatrix<DTYPE>& nextErrorAng);
 
 #endif // CUDAFUNCS_CUH

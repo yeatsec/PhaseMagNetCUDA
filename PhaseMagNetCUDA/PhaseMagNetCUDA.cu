@@ -12,6 +12,7 @@
 // #define PRINT_WEIGHT
 // #define PRINT_ACT
 // #define PRINT_MAG
+// #define PRINT_ERROR
 
 
 /*
@@ -283,7 +284,8 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 	// calculate error at the outputs
 	auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
 	Matrix<DTYPE> err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
-	((layers.getTail()->getElemPtr())->errorData).fillFromMatrix(err);
+	((layers.getTail()->getElemPtr())->errorDataMag).fillFromMatrix(err);
+	setValueWithCuda(((layers.getTail()->getElemPtr())->errorDataAng), 0.0f);
 	// walk Layer list in reverse and update layer error incrementally, adjust "next" weights
 	// call matmul kernels on transpose weights
 	// call weightUpdate kernels
@@ -293,26 +295,30 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 			Layer* prevLayerPtr = (ptr->getPrev())->getElemPtr();
 			Layer* nextLayerPtr = ptr->getElemPtr(); // iterating backwards, so this appears backwards wrt forwardpropagate
 			/* Print the error at each neuron in next*/
-			/*printf("Error: \n");
-			Matrix<DTYPE> errMat(nextLayerPtr->errorData);
-			for (int i = 0; i < errMat.mdim.getNumElems(); ++i)
-				printf("%5.5f ", errMat.data[i]);
-			printf("\n");*/
+#ifdef PRINT_ERROR
+			printf("Error: \n");
+			Matrix<DTYPE> errMag(nextLayerPtr->errorDataMag);
+			Matrix<DTYPE> errAng(nextLayerPtr->errorDataAng);
+			for (int i = 0; i < errMag.mdim.getNumElems(); ++i)
+				printf("Mag(%5.5f) Ang(%5.5f) ", errMag.data[i], errAng.data[i]);
+			printf("\n");
+#endif // PRINT_ERROR
 			// update the bias, backpropagate error, update weights
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::conv:
-				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData, 
-					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams, 
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData, lrnRate);
+				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag, 
+					prevLayerPtr->errorDataAng, nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams, 
+					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng, lrnRate);
 				break;
 			case LayerType::avgpool:
-				cudaStatus = complexAvgPoolBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
-					nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData);
+				cudaStatus = complexAvgPoolBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag,
+					prevLayerPtr->errorDataAng, nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI,
+					nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng);
 				break;
 			case LayerType::fc:
-				cudaStatus = complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorData,
-					*(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorData, lrnRate);
+				cudaStatus = complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag,
+					prevLayerPtr->errorDataAng, *(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
+					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng, lrnRate);
 				break;
 			default:
 				throw std::logic_error("Not yet implemented\n");
@@ -334,7 +340,8 @@ void PhaseMagNetCUDA::resetState(void) {
 			Layer* elemPtr = ptr->getElemPtr(); // reference to this element
 			setValueWithCuda(elemPtr->layerDataR, 0);
 			setValueWithCuda(elemPtr->layerDataI, 0);
-			setValueWithCuda(elemPtr->errorData, 0);
+			setValueWithCuda(elemPtr->errorDataMag, 0);
+			setValueWithCuda(elemPtr->errorDataAng, 0);
 		}
 	};
 	layers.forEach(resetfunc);
