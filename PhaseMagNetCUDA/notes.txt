@@ -1,4 +1,5 @@
 
 TODO List / Reminders
 
-	thoughts - the L2 hyperparameter should be included in the lrnRate multiplication. a good value for ALPHA afterwards would be 0.02
+	removed scaling of convbackprop by receptive field size
+

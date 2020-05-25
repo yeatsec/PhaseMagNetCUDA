@@ -13,11 +13,13 @@
 // #define PRINT_ACT
 // #define PRINT_MAG
 // #define PRINT_ERROR
+// #define PRINT_OUTPUT
 
 
 /*
 	Convention: Activation A<1, N>, Weights <N, M>, Activation <1, M>
 */
+
 
 DTYPE abs2(DTYPE r, DTYPE i) {
 	return sqrt((r * r) + (i * i));
@@ -31,7 +33,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 	assert(!(initialized || layers.isEmpty()));
 	// do this to seed the random
 	// srand(static_cast <unsigned> (time(0)));
-	srand(3);
+	srand(1234567);
 	// iterate through the layers list and initialize weights
 	auto initfunc = [](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasPrev()) { // only do this for weight "owners"
@@ -43,7 +45,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			switch (elemPtr->layParams.layType) {
 			case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
 			case LayerType::avgpool:
-			case LayerType::conv: // ensure that the dimensions match up
+			case LayerType::phasorconv: // ensure that the dimensions match up
 				// expect that the dimensions for both the conv filters and activation maps are set
 				assert(elemPtr->layParams.convParams.getNextActDim(prevPtr->layParams.matDim, 
 					sizeof(DTYPE)) == elemPtr->layParams.matDim);
@@ -136,13 +138,16 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 		setInput(inputData[i]);
 		forwardPropagate();
 		Matrix<DTYPE>& output = getOutput();
-		//printf("DEBUG %5.3f\n", layers.getHead()->getNext()->getElem().layerDataR.getElem(14, 14));
-		//printf("Output:\t");
 		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
 			predictions.setElem(i, j, output.data[j]);
-			//printf("%3.3f\t", output.data[j]);
 		}
-		//printf("\n");
+#ifdef PRINT_OUTPUT
+		printf("Output:\t");
+		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
+			printf("%3.3f\t", output.data[j]);
+		}
+		printf("\n");
+#endif // PRINT_OUTPUT
 		if (verbose) {
 			printf("Prediction Progress: %5.2f\t\r", 100.0 * ((float)(i+1)) / ((float)num_examples));
 		}
@@ -174,28 +179,19 @@ float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uc
 
 void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
-	Matrix<DTYPE> tempR(layPtr->layerDataR.mdim);
-	Matrix<DTYPE> tempI(layPtr->layerDataI.mdim);
+	Matrix<DTYPE> temp(layPtr->layerData.mdim);
+
 	for (size_t i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
-		DTYPE rad = PI * ((DTYPE)(ucharptr[i]) / 255.0f) - PI / 2;
-		DTYPE real = cosf(rad);
-		DTYPE imag = sinf(rad);
-		tempR.setElemFlatten(i, real);
-		tempI.setElemFlatten(i, imag);
+		DTYPE inp = (((DTYPE)(ucharptr[i])) / 255.0f);
+		temp.setElemFlatten(i, inp);
 	}
-	layPtr->layerDataR.fillFromMatrix(tempR);
-	layPtr->layerDataI.fillFromMatrix(tempI);
+	layPtr->layerData.fillFromMatrix(temp);
 }
 
 Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	Layer* layPtr = layers.getTail()->getElemPtr();
-	Matrix<DTYPE> outR(layPtr->layerDataR);
-	Matrix<DTYPE> outI(layPtr->layerDataI);
-	Matrix<DTYPE> out(layPtr->layParams.matDim);
+	Matrix<DTYPE> out(layPtr->layerData);
 	
-	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
-		out.setElem(0, i, abs2(outR.getElem(0, i), outI.getElem(0, i))); // magnitude
-	}
 #ifdef PRINT_MAG
 	printf("Mag Output: ");
 	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
@@ -223,26 +219,25 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 		if (ptr->hasNext()) { // only propagate if not last layer
 			Layer* prevLayerPtr = ptr->getElemPtr();
 			Layer* nextLayerPtr = (ptr->getNext())->getElemPtr();
+			
 			cudaError_t cudaStatus(cudaSuccess);
+			
 			switch (nextLayerPtr->layParams.layType) {
-			case LayerType::conv:
+			case LayerType::phasorconv:
 				//printf("CONV\n");
-				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
-					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams,
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
+				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerData,
+					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias,
+					nextLayerPtr->layParams.convParams,	nextLayerPtr->layerData, nextLayerPtr->layerDataAng);
 				break;
 			case LayerType::avgpool:
 				//printf("AVG_POOL\n");
-				cudaStatus = complexAveragePoolWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
-					nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI);
+				cudaStatus = scalarAvgPoolWithCuda(prevLayerPtr->layerData,
+					nextLayerPtr->layParams.convParams, nextLayerPtr->layerData, nextLayerPtr->layParams.actType);
 				break;
 			case LayerType::fc:
-				//printf("FC\n");
-				cudaStatus = vecMatMultWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI,
-					*(prevLayerPtr->getWeightsNextR()), *(prevLayerPtr->getWeightsNextI()),
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI); // writes results in nextLayerRef.layerdata
-				complexAddBiasWithCuda(nextLayerPtr->layerDataR, nextLayerPtr->layerDataI,
-					nextLayerPtr->biasR, nextLayerPtr->biasI);
+				cudaStatus = scalarFCForwardPropWithCuda(prevLayerPtr->layerData,
+					*(nextLayerPtr->getWeightsPrevR()), nextLayerPtr->bias,
+					nextLayerPtr->layerData, nextLayerPtr->layParams.actType);
 				break;
 			default:
 				throw std::logic_error("Not yet implemented\n");
@@ -250,6 +245,7 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 			}
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "forward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
+				throw std::logic_error("Forward Propagate Failed\n");
 			}
 #ifdef PRINT_WEIGHT
 			Matrix<DTYPE> wgtR(nextLayerPtr->weightsPrevR[0]);
@@ -261,9 +257,10 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 			}
 #endif // PRINT_WEIGHT
 #ifdef PRINT_ACT
+			Matrix<DTYPE> nextAct(nextLayerPtr->layerData);
 			printf("Activation\n");
-			for (int i = 0; i < nextR.getNumElems(); ++i) {
-				printf("Re(%5.5f) Im(%5.5f) ", nextR.data[i], nextI.data[i]);
+			for (int i = 0; i < nextAct.getNumElems(); ++i) {
+				printf("%5.5f ", nextAct.data[i]);
 			}
 			printf("\n");
 #endif // PRINT_ACT
@@ -284,8 +281,7 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 	// calculate error at the outputs
 	auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
 	Matrix<DTYPE> err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
-	((layers.getTail()->getElemPtr())->errorDataMag).fillFromMatrix(err);
-	setValueWithCuda(((layers.getTail()->getElemPtr())->errorDataAng), 0.0f);
+	((layers.getTail()->getElemPtr())->errorData).fillFromMatrix(err);
 	// walk Layer list in reverse and update layer error incrementally, adjust "next" weights
 	// call matmul kernels on transpose weights
 	// call weightUpdate kernels
@@ -297,28 +293,27 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 			/* Print the error at each neuron in next*/
 #ifdef PRINT_ERROR
 			printf("Error: \n");
-			Matrix<DTYPE> errMag(nextLayerPtr->errorDataMag);
-			Matrix<DTYPE> errAng(nextLayerPtr->errorDataAng);
+			Matrix<DTYPE> errMag(nextLayerPtr->errorData);
 			for (int i = 0; i < errMag.mdim.getNumElems(); ++i)
-				printf("Mag(%5.5f) Ang(%5.5f) ", errMag.data[i], errAng.data[i]);
+				printf("%5.5f ", errMag.data[i]);
 			printf("\n");
 #endif // PRINT_ERROR
 			// update the bias, backpropagate error, update weights
+			
 			switch (nextLayerPtr->layParams.layType) {
-			case LayerType::conv:
-				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag, 
-					prevLayerPtr->errorDataAng, nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->layParams.convParams, 
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng, lrnRate);
+			case LayerType::phasorconv:
+				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData, 
+					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, 
+					nextLayerPtr->layerData, nextLayerPtr->layerDataAng, nextLayerPtr->errorData, lrnRate);
 				break;
 			case LayerType::avgpool:
-				cudaStatus = complexAvgPoolBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag,
-					prevLayerPtr->errorDataAng, nextLayerPtr->layParams.convParams, nextLayerPtr->layerDataR, nextLayerPtr->layerDataI,
-					nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng);
+				cudaStatus = scalarAvgPoolBackpropWithCuda(prevLayerPtr->errorData, nextLayerPtr->layParams.convParams, nextLayerPtr->layerData,
+					nextLayerPtr->errorData, nextLayerPtr->layParams.actType);
 				break;
 			case LayerType::fc:
-				cudaStatus = complexBackpropWithCuda(prevLayerPtr->layerDataR, prevLayerPtr->layerDataI, prevLayerPtr->errorDataMag,
-					prevLayerPtr->errorDataAng, *(nextLayerPtr->weightsPrevR), *(nextLayerPtr->weightsPrevI), nextLayerPtr->biasR, nextLayerPtr->biasI,
-					nextLayerPtr->layerDataR, nextLayerPtr->layerDataI, nextLayerPtr->errorDataMag, nextLayerPtr->errorDataAng, lrnRate);
+				cudaStatus = scalarFCBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData,
+					*(nextLayerPtr->weightsPrevR), nextLayerPtr->layerData, nextLayerPtr->errorData,
+					nextLayerPtr->bias, nextLayerPtr->layParams.actType, lrnRate);
 				break;
 			default:
 				throw std::logic_error("Not yet implemented\n");
@@ -338,10 +333,9 @@ void PhaseMagNetCUDA::resetState(void) {
 	auto resetfunc = [](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasPrev()) { // input doesn't need to be reset; will be overwritten
 			Layer* elemPtr = ptr->getElemPtr(); // reference to this element
-			setValueWithCuda(elemPtr->layerDataR, 0);
-			setValueWithCuda(elemPtr->layerDataI, 0);
-			setValueWithCuda(elemPtr->errorDataMag, 0);
-			setValueWithCuda(elemPtr->errorDataAng, 0);
+			setValueWithCuda(elemPtr->layerData, 0);
+			setValueWithCuda(elemPtr->layerDataAng, 0);
+			setValueWithCuda(elemPtr->errorData, 0);
 		}
 	};
 	layers.forEach(resetfunc);
@@ -418,10 +412,8 @@ void writeLayer(std::ostream& os, const Layer* layptr) {
 	case LayerType::input:
 		break;
 	default: // has biases and weightsPrev
-		Matrix<DTYPE> tempBiasR(layptr->biasR);
-		writeMatrix(os, tempBiasR);
-		Matrix<DTYPE> tempBiasI(layptr->biasI);
-		writeMatrix(os, tempBiasI);
+		Matrix<DTYPE> tempBias(layptr->bias);
+		writeMatrix(os, tempBias);
 		for (int i = 0; i < layptr->layParams.convParams.numFilters; ++i) {
 			Matrix<DTYPE> tempR((layptr->weightsPrevR)[i]);
 			Matrix<DTYPE> tempI((layptr->weightsPrevI)[i]);
@@ -449,8 +441,7 @@ Layer readLayer(std::ifstream& istrm) {
 		// weightsPrev will remain nullptr and bias will be 0; move on
 		break;
 	default:
-		lay.biasR.fillFromMatrix(readMatrix<DTYPE>(istrm));
-		lay.biasI.fillFromMatrix(readMatrix<DTYPE>(istrm));
+		lay.bias.fillFromMatrix(readMatrix<DTYPE>(istrm));
 		lay.weightsPrevR = new CudaMatrix<DTYPE>[cP.numFilters];
 		lay.weightsPrevI = new CudaMatrix<DTYPE>[cP.numFilters];
 		for (int i = 0; i < cP.numFilters; ++i) {

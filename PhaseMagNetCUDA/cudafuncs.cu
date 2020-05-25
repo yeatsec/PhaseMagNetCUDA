@@ -6,7 +6,7 @@
 #include "cudafuncs.cuh"
 #include <assert.h>
 
-constexpr auto ALPHA = 0.001f;
+constexpr auto ALPHA = 0.000f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
@@ -35,6 +35,43 @@ __device__ void d_phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
 __device__ const size_t getNumElems(const MatrixDim& mdim) {
 	return mdim.adim * mdim.rdim * mdim.cdim;
 }
+
+__device__ DTYPE reluFunc(DTYPE act) {
+	return fmaxf(act, 0.0f);
+}
+
+__device__ DTYPE reluDerivFunc(DTYPE act) {
+	if (act > 0.0f) {
+		return ((DTYPE)1.0f);
+	}
+	else {
+		return ((DTYPE)0.0f);
+	}
+}
+__device__ DTYPE sigmoidFunc(DTYPE act) {
+	return ((DTYPE)(1.0f / (1.0f + expf(-1.0f * act))));
+}
+
+__device__ DTYPE sigmoidDerivFunc(DTYPE act) {
+	return ((DTYPE)((act) * (1.0f - act)));
+}
+
+/* Softmax + softmaxderiv funcs are just placeholders; the work is done by the processor */
+__device__ DTYPE softmaxFunc(DTYPE act) {
+	return act;
+}
+
+__device__ DTYPE softmaxDerivFunc(DTYPE act) {
+	return 1.0f;
+}
+
+// static pointers to device functions
+__device__ scalarActFunc p_reluFunc = reluFunc;
+__device__ scalarActFunc p_reluDerivFunc = reluDerivFunc;
+__device__ scalarActFunc p_sigmoidFunc = sigmoidFunc;
+__device__ scalarActFunc p_sigmoidDerivFunc = sigmoidDerivFunc;
+__device__ scalarActFunc p_softmaxFunc = softmaxFunc;
+__device__ scalarActFunc p_softmaxDerivFunc = softmaxDerivFunc;
 
 
 __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE errMag, DTYPE errAng, DTYPE& dLdMag, DTYPE& dLdPhi) {
@@ -81,125 +118,12 @@ __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYP
 	}
 }
 
-
-//__device__ void get_dPhidMag_dPhidPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE err, DTYPE& dLdMag, DTYPE& dLdPhi) {
-//	;
-//}
+__device__ void scalarAdjustWeight(DTYPE& wgt, const DTYPE inp, const DTYPE err, const DTYPE lrnRate) {
+	wgt += ((inp * err) - wgt * ALPHA) * lrnRate; // with L2 regularization
+}
 
 __device__ int getInd(MatrixDim mdim, int row, int col, int aisle = 0) {
 	return (aisle * mdim.astride) + (row * mdim.rstride) + col;
-}
-
-
-// define matrix multiplication kernel w/ corresponding helper function. transpose option on pre-multiply element
-__global__ void vecMatMultKernel(const CudaMatrixArg<DTYPE> Ar, const CudaMatrixArg<DTYPE> Ai,
-	const CudaMatrixArg<DTYPE> Br, const CudaMatrixArg<DTYPE> Bi, 
-	CudaMatrixArg<DTYPE> Cr, CudaMatrixArg<DTYPE> Ci)
-{
-	// get block column
-	// get thread column
-	size_t col = threadIdx.x + (blockIdx.x * VEC_SIZE);
-
-	DTYPE Cvalue_r = 0;
-	DTYPE Cvalue_i = 0;
-
-	size_t num_a_its = getNumElems(Ar.mdim) / VEC_SIZE;
-	if (getNumElems(Ar.mdim) % VEC_SIZE != 0)
-		++num_a_its;
-
-	__shared__ DTYPE Ar_s[VEC_SIZE];
-	__shared__ DTYPE Ai_s[VEC_SIZE];
-	for (size_t a_it = 0; a_it < num_a_its; ++a_it) { // select block of A to do 
-		size_t A_col = a_it * VEC_SIZE + threadIdx.x;
-		if (A_col < getNumElems(Ar.mdim)) { // don't index A_col if past end
-			Ar_s[threadIdx.x] = getElemFlatten(Ar, A_col);
-			Ai_s[threadIdx.x] = getElemFlatten(Ai, A_col);
-		}
-		__syncthreads(); // all threads must load in A before we can use it to compute
-		if (col < getNumElems(Cr.mdim)) { // don't continue if you're past the end of C
-			for (size_t dot_it = 0; dot_it < VEC_SIZE; ++dot_it) {
-				size_t b_row_ind = a_it * VEC_SIZE + dot_it;
-				if (b_row_ind < getNumElems(Ar.mdim)) { // don't index into b past its row dimension. also implies As[dot_it] will not be accessed
-					// multiply complex A[dot_it] with complex B[b_row_ind, col];
-					DTYPE tempr, tempi;
-					d_cmp_mult(Ar_s[dot_it], Ai_s[dot_it], getElem(Br, b_row_ind, col), getElem(Bi, b_row_ind, col), tempr, tempi);
-					Cvalue_r += tempr;
-					Cvalue_i += tempi;
-				}
-			}
-		}
-		__syncthreads();
-	}
-	if (col < getNumElems(Cr.mdim)) {
-		setElemFlatten(Cr, col, Cvalue_r);
-		setElemFlatten(Ci, col, Cvalue_i);
-	}
-}
-
-// helper function for MatMul
-cudaError_t vecMatMultWithCuda(const CudaMatrix<DTYPE>& d_Ar, const CudaMatrix<DTYPE>& d_Ai, 
-	const CudaMatrix<DTYPE>& d_Br, const CudaMatrix<DTYPE>& d_Bi, 
-	CudaMatrix<DTYPE>& d_Cr, CudaMatrix<DTYPE>& d_Ci) {
-	// flattened A must have same size as b row
-	assert(d_Ar.mdim.getNumElems() == d_Br.mdim.rdim && d_Br.mdim.cdim == d_Cr.mdim.getNumElems()); // check mult compat
-	assert(d_Ar.mdim == d_Ai.mdim); // real and imag must have same shape
-	assert(d_Br.mdim == d_Bi.mdim);
-	assert(d_Cr.mdim == d_Ci.mdim);
-	cudaError_t cudaStatus = cudaSuccess;
-
-	// invoke kernel; result of this operation will always be row vector
-	unsigned int num_vecs = d_Cr.mdim.getNumElems() / VEC_SIZE;
-	if (d_Cr.mdim.getNumElems() % VEC_SIZE != 0)
-		++num_vecs;
-	vecMatMultKernel <<<num_vecs, VEC_SIZE>>> (d_Ar.getCudaMatrixArg(), d_Ai.getCudaMatrixArg(),
-		d_Br.getCudaMatrixArg(), d_Bi.getCudaMatrixArg(),
-		d_Cr.getCudaMatrixArg(), d_Ci.getCudaMatrixArg());
-
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "vecMatMultKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-	}
-
-	return cudaStatus;
-}
-
-__global__ void complexAddBiasKernel(CudaMatrixArg<DTYPE> d_ActR, CudaMatrixArg<DTYPE> d_ActI,
-	CudaMatrixArg<DTYPE> d_BiasR, CudaMatrixArg<DTYPE> d_BiasI) {
-	const int flatInd = threadIdx.x + (blockIdx.x * blockDim.x);
-	if (flatInd < getNumElems(d_ActR.mdim)) {
-		DTYPE pactR = getElemFlatten(d_ActR, flatInd);
-		DTYPE pactI = getElemFlatten(d_ActI, flatInd);
-		DTYPE bR = getElemFlatten(d_BiasR, flatInd);
-		DTYPE bI = getElemFlatten(d_BiasI, flatInd);
-		setElemFlatten(d_ActR, flatInd, pactR + bR);
-		setElemFlatten(d_ActI, flatInd, pactI + bI);
-	}
-}
-
-// helper function for MatMul
-cudaError_t complexAddBiasWithCuda(CudaMatrix<DTYPE>& d_ActR, CudaMatrix<DTYPE>& d_ActI,
-	const CudaMatrix<DTYPE>& d_BiasR, const CudaMatrix<DTYPE>& d_BiasI) {
-	// flattened A must have same size as b row
-	assert(d_ActR.mdim == d_ActI.mdim);
-	assert(d_BiasR.mdim == d_BiasI.mdim);
-	assert(d_ActR.mdim == d_BiasR.mdim);
-	cudaError_t cudaStatus = cudaSuccess;
-
-	int numIts = d_ActR.mdim.getNumElems() / VEC_SIZE;
-	if (numIts * VEC_SIZE < d_ActR.mdim.getNumElems())
-		++numIts;
-
-	complexAddBiasKernel <<< numIts, VEC_SIZE >>> (d_ActR.getCudaMatrixArg(), d_ActI.getCudaMatrixArg(),
-		d_BiasR.getCudaMatrixArg(), d_BiasI.getCudaMatrixArg());
-	
-	// Check for any errors launching the kernel
-	cudaStatus = cudaGetLastError();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "complexAddBiasKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-	}
-
-	return cudaStatus;
 }
 
 __global__ void setValueKernel(CudaMatrixArg<DTYPE> d_Mat, DTYPE value) {
@@ -223,22 +147,20 @@ cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value) {
 	return cudaStatus;
 }
 
-__global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, const CudaMatrixArg<DTYPE> d_prevActI,
-	const CudaMatrixArg<DTYPE> d_convR, const CudaMatrixArg<DTYPE> d_convI, const ConvParams convParams, const int filterNum,
-	CudaMatrixArg<DTYPE> d_nextActR, CudaMatrixArg<DTYPE> d_nextActI) {
+__global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, const CudaMatrixArg<DTYPE> d_convR, 
+	const CudaMatrixArg<DTYPE> d_convI, const CudaMatrixArg<DTYPE> d_bias, const ConvParams convParams, const int filterNum, CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng) {
 	extern __shared__ DTYPE s[];
 	const int sharedInputDim = blockDim.x + (2 * convParams.pad); // == 20 x 20 == 400
-	const int numElemsInput = sharedInputDim * sharedInputDim * d_prevActR.mdim.adim;
-	DTYPE* prevActR_s = s;
-	DTYPE* prevActI_s = &(s[numElemsInput]);
-	DTYPE* filterR_s = &(s[2*numElemsInput]);
+	const int numElemsInput = sharedInputDim * sharedInputDim * d_prevAct.mdim.adim;
+	DTYPE* prevAct_s = s;
+	DTYPE* filterR_s = &(s[numElemsInput]);
 	DTYPE* filterI_s = &(filterR_s[getNumElems(d_convR.mdim)]);
 	// identify which block, which thread, and location in nextAct
 	const int ownNextActRow = threadIdx.y + (blockIdx.y * blockDim.y);
 	const int ownNextActCol = threadIdx.x + (blockIdx.x * blockDim.x);
 	const int flatInd = (threadIdx.y * blockDim.x) + threadIdx.x;
-	const int prevRowB = d_prevActR.mdim.rdim;
-	const int prevColB = d_prevActR.mdim.cdim;
+	const int prevRowB = d_prevAct.mdim.rdim;
+	const int prevColB = d_prevAct.mdim.cdim;
 	const int pad = convParams.pad;
 	const int chanStride = sharedInputDim * sharedInputDim;
 	// <><><><><><><><><> Hardcoded for stride of 1 <><><><><><><>
@@ -317,7 +239,7 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, 
 		}
 	}
 	__syncthreads(); // shared input and weights have been fetched. compute the result
-	if (ownNextActCol < d_nextActR.mdim.cdim && ownNextActRow < d_nextActR.mdim.rdim) { // only do this if result matters
+	if (ownNextActCol < d_nextAct.mdim.cdim && ownNextActRow < d_nextAct.mdim.rdim) { // only do this if result matters
 		DTYPE dotValR = 0.0;
 		DTYPE dotValI = 0.0;
 		for (int f_chan = 0; f_chan < convParams.filterDim.adim; ++f_chan) {
@@ -331,9 +253,10 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, 
 					DTYPE weightI = filterI_s[getInd(d_convI.mdim, f_row, f_col, f_chan)];
 					DTYPE actR = 0;
 					DTYPE actI = 0;
-					if (tmpRow >= 0 && tmpRow < d_prevActR.mdim.rdim && tmpCol >= 0 && tmpCol < d_prevActR.mdim.cdim) {
-						actR = getElem(d_prevActR, tmpRow, tmpCol, f_chan); // prevActR_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];// from f_col to s_col
-						actI = getElem(d_prevActI, tmpRow, tmpCol, f_chan); // prevActI_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];
+					if (tmpRow >= 0 && tmpRow < d_prevAct.mdim.rdim && tmpCol >= 0 && tmpCol < d_prevAct.mdim.cdim) {
+						DTYPE act = PI * getElem(d_prevAct, tmpRow, tmpCol, f_chan);
+						actR = cosf(act); // prevActR_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];// from f_col to s_col
+						actI = sinf(act); // prevActI_s[(f_chan * chanStride) + (s_row * sharedInputDim) + s_col];
 					}
 					DTYPE resR, resI;
 					d_cmp_mult(actR, actI, weightR, weightI, resR, resI);
@@ -342,39 +265,43 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevActR, 
 				}
 			}
 		}
-		setElem(d_nextActR, ownNextActRow, ownNextActCol, dotValR, filterNum);
-		setElem(d_nextActI, ownNextActRow, ownNextActCol, dotValI, filterNum); // set in correct filter position
+		// calculate the magnitude with bias and pass through activation function
+		DTYPE dotValMag = d_abs2(dotValR, dotValI) + getElemFlatten(d_bias, filterNum);
+		DTYPE dotValAng = d_ang2(dotValR, dotValI);
+		setElem(d_nextAct, ownNextActRow, ownNextActCol, dotValMag, filterNum);
+		setElem(d_nextActAng, ownNextActRow, ownNextActCol, dotValAng, filterNum);
 	}
 }
 
-cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI,
-	CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI, const ConvParams& convParams,
-	CudaMatrix<DTYPE>& d_nextActR, CudaMatrix<DTYPE>& d_nextActI) {
-	assert(d_prevActR.mdim == d_prevActI.mdim && d_convR[0].mdim == d_convI[0].mdim && d_nextActR.mdim == d_nextActI.mdim);
-	assert(d_convR[0].mdim.adim == d_prevActR.mdim.adim);
+cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
+	CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI, const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams,
+	CudaMatrix<DTYPE>& d_nextAct, CudaMatrix<DTYPE>& d_nextActAng) {
+	assert(d_convR[0].mdim == d_convI[0].mdim);
+	assert(d_convR[0].mdim.adim == d_prevAct.mdim.adim);
+	assert(convParams.numFilters == d_nextAct.mdim.adim);
 
 	dim3 bDim(BLOCK_SIZE, BLOCK_SIZE);
-	unsigned int numRowIts = d_nextActR.mdim.rdim / BLOCK_SIZE;
-	if (d_nextActR.mdim.rdim % BLOCK_SIZE != 0)
+	unsigned int numRowIts = d_nextAct.mdim.rdim / BLOCK_SIZE;
+	if (d_nextAct.mdim.rdim % BLOCK_SIZE != 0)
 		++numRowIts;
-	unsigned int numColIts = d_nextActR.mdim.cdim / BLOCK_SIZE;
-	if (d_nextActR.mdim.cdim % BLOCK_SIZE != 0)
+	unsigned int numColIts = d_nextAct.mdim.cdim / BLOCK_SIZE;
+	if (d_nextAct.mdim.cdim % BLOCK_SIZE != 0)
 		++numColIts;
 	dim3 gridDim(numColIts, numRowIts); // x, y
 
 	cudaError_t cudaStatus(cudaSuccess);
 	const int sharedSize = ((BLOCK_SIZE + (convParams.pad * 2)) *
-		(BLOCK_SIZE + (convParams.pad * 2)) * d_prevActR.mdim.adim // number of elems of shared input
-		+ d_convR[0].mdim.getNumElems()) * 2 * sizeof(DTYPE); // number of elems of convKernel in bytes, re, im
+		(BLOCK_SIZE + (convParams.pad * 2)) * d_prevAct.mdim.adim // number of elems of shared input
+		+ d_convR[0].mdim.getNumElems() * 2) * sizeof(DTYPE); // number of elems of convKernel in bytes, re, im
 	// loop through the activation maps (filters)
 	// call 2D grid of activation map
 	// filter is shared memory
 	// subset of input is shared memory
 	for (int filterNum = 0; filterNum < convParams.numFilters; ++filterNum) {
 		
-		complexConvolutionKernel <<< gridDim, bDim, sharedSize >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(),
-			d_convR[filterNum].getCudaMatrixArg(), d_convI[filterNum].getCudaMatrixArg(), convParams, filterNum,
-			d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg());
+		complexConvolutionKernel <<< gridDim, bDim, sharedSize >>> (d_prevAct.getCudaMatrixArg(),
+			d_convR[filterNum].getCudaMatrixArg(), d_convI[filterNum].getCudaMatrixArg(), d_convBias.getCudaMatrixArg(), convParams, filterNum,
+			d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg());
 
 		cudaStatus = cudaGetLastError();
 
@@ -388,233 +315,10 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevActR, cons
 	return cudaStatus;
 }
 
-__global__ void complexAveragePoolKernel(const CudaMatrixArg<DTYPE> d_prevActR, const CudaMatrixArg<DTYPE> d_prevActI,
-	const ConvParams convParams, const size_t actMap, CudaMatrixArg<DTYPE> d_nextActR, CudaMatrixArg<DTYPE> d_nextActI) {
-	// where am i in d_nextAct?
-	int nextActRow = threadIdx.y + (blockIdx.y * blockDim.y);
-	int nextActCol = threadIdx.x + (blockIdx.x * blockDim.x);
-
-	if (nextActRow < d_nextActR.mdim.rdim && nextActCol < d_nextActR.mdim.cdim) {
-		// compute result, no shared memory would help
-		int prevActRow = nextActRow * convParams.stride;
-		int prevActCol = nextActCol * convParams.stride;
-		// compute aggregate
-		DTYPE resR = 0;
-		DTYPE resI = 0;
-		for (int f_row = prevActRow; f_row < prevActRow + convParams.stride; ++f_row) {
-			for (int f_col = prevActCol; f_col < prevActCol + convParams.stride; ++f_col) {
-				DTYPE actR = getElem(d_prevActR, f_row, f_col, actMap);
-				DTYPE actI = getElem(d_prevActI, f_row, f_col, actMap);
-				resR += actR;
-				resI += actI;
-			}
-		}
-		// compute average, 
-		DTYPE denom = 1.0 / ((DTYPE)(convParams.stride * convParams.stride));
-		resR *= denom;
-		resI *= denom;
-		setElem(d_nextActR, nextActRow, nextActCol, resR, actMap);
-		setElem(d_nextActI, nextActRow, nextActCol, resI, actMap);
-	}
-}
-
-cudaError_t complexAveragePoolWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI, 
-	const ConvParams& convParams, CudaMatrix<DTYPE>& d_nextActR, CudaMatrix<DTYPE>& d_nextActI) {
-	assert(d_prevActR.mdim == d_prevActI.mdim);
-	assert(d_nextActR.mdim == d_nextActI.mdim);
-	assert(d_prevActR.mdim.adim == d_nextActR.mdim.adim); // same number of activation maps
-	assert(d_prevActR.mdim.rdim / convParams.stride == d_nextActR.mdim.rdim); // downsample dim
-	assert(d_prevActR.mdim.cdim / convParams.stride == d_nextActR.mdim.cdim); // downsample dim
-
-	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
-	size_t numRowIts = d_nextActR.mdim.rdim / BLOCK_SIZE;
-	if (d_nextActR.mdim.rdim % BLOCK_SIZE != 0)
-		++numRowIts;
-	size_t numColIts = d_nextActR.mdim.cdim / BLOCK_SIZE;
-	if (d_nextActR.mdim.cdim % BLOCK_SIZE != 0)
-		++numColIts;
-	dim3 gridDim(numColIts, numRowIts); // x, y
-
-	cudaError_t cudaStatus(cudaSuccess);
-
-	for (unsigned int actMap = 0; actMap < convParams.numFilters; ++actMap) {
-		complexAveragePoolKernel <<< gridDim, blockDim >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(), convParams,
-			actMap, d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg());
-
-		cudaStatus = cudaGetLastError();
-
-		if (cudaStatus != cudaSuccess) {
-			// Check for any errors launching the kernel
-			fprintf(stderr, "complexAvgPool %ud launch failed: %s\n", actMap, cudaGetErrorString(cudaStatus));
-		}
-	}
-
-	return cudaStatus;
-}
-
-
-__global__ void complexBackpropKernel(const CudaMatrixArg<DTYPE> prevActR, const CudaMatrixArg<DTYPE> prevActI,
-	CudaMatrixArg<DTYPE> prevErrorMag, CudaMatrixArg<DTYPE> prevErrorAng, CudaMatrixArg<DTYPE> weightsR, CudaMatrixArg<DTYPE> weightsI,
-	const CudaMatrixArg<DTYPE> nextActR, const CudaMatrixArg<DTYPE> nextActI, const CudaMatrixArg<DTYPE> nextErrorMag,
-	const CudaMatrixArg<DTYPE> nextErrorAng, float lrnRate) {
-
-	unsigned int prevError_col = threadIdx.x + (blockIdx.x * VEC_SIZE); // column of prevError "owned" by the thread
-	unsigned int num_nextError_its = getNumElems(nextErrorMag.mdim) / VEC_SIZE;
-	DTYPE prevErrorMag_val = 0.0;
-	DTYPE prevErrorAng_val = 0.0;
-	if (getNumElems(nextErrorMag.mdim) % VEC_SIZE != 0) {
-		++num_nextError_its;
-	}
-	// no need to reallocate shared each iteration
-	__shared__ DTYPE nextErrorMag_s[VEC_SIZE];
-	__shared__ DTYPE nextErrorAng_s[VEC_SIZE];
-	__shared__ DTYPE nextActR_s[VEC_SIZE];
-	__shared__ DTYPE nextActI_s[VEC_SIZE];
-	for (int nextError_it = 0; nextError_it < num_nextError_its; ++nextError_it) {
-		int own_nextErr_col = nextError_it * VEC_SIZE + threadIdx.x;
-		if (own_nextErr_col < getNumElems(nextErrorMag.mdim)) {
-			nextErrorMag_s[threadIdx.x] = getElemFlatten(nextErrorMag, own_nextErr_col);
-			nextErrorAng_s[threadIdx.x] = getElemFlatten(nextErrorAng, own_nextErr_col);
-			nextActR_s[threadIdx.x] = getElemFlatten(nextActR, own_nextErr_col);
-			nextActI_s[threadIdx.x] = getElemFlatten(nextActI, own_nextErr_col);
-		}
-		__syncthreads();
-		// iterate through weights along row axis (nextError dim) to MAC into own prevError value with w(prevError_col, ...)*nextError(...)
-		for (unsigned int dot_it = 0; dot_it < VEC_SIZE; ++dot_it) {
-			unsigned int wgt_col = nextError_it * VEC_SIZE + dot_it;
-			if (prevError_col < getNumElems(prevErrorMag.mdim) && wgt_col < getNumElems(nextErrorMag.mdim)) {
-				DTYPE wr = getElem(weightsR, prevError_col, wgt_col);
-				DTYPE wi = getElem(weightsI, prevError_col, wgt_col);
-				DTYPE xr = getElemFlatten(prevActR, prevError_col);
-				DTYPE xi = getElemFlatten(prevActI, prevError_col);
-				DTYPE Yr = nextActR_s[dot_it];
-				DTYPE Yi = nextActI_s[dot_it];
-				DTYPE errMag = nextErrorMag_s[dot_it];
-				DTYPE errAng = nextErrorAng_s[dot_it];
-				DTYPE wxr, wxi, dLdMag, dLdPhi;
-				d_cmp_mult(xr, xi, wr, wi, wxr, wxi);
-				get_dLdMag_dLdPhi(Yr, Yi, wxr, wxi, errMag, errAng, dLdMag, dLdPhi);
-				// propagate error back
-				prevErrorMag_val += (d_abs2(wr, wi) * dLdMag);
-				prevErrorAng_val += dLdPhi; // adjusts independently
-				// adjust weight
-				// apply LRN_RATE to dLdPhi right now
-				dLdPhi *= lrnRate;
-				DTYPE dLdPhiR, dLdPhiI;
-				d_phi_to_comp(dLdPhi, dLdPhiR, dLdPhiI);
-				// multiply into result
-				// CHANGE - scale magnitude change by current magnitude
-				DTYPE absw = d_abs2(wr, wi);
-				if (absw > 0) {
-					dLdMag *= d_abs2(xr, xi); // wr = (((dLdMag * (1.0f - ALPHA)) - ALPHA) * wr / absw * lrnRate) + wr;
-					DTYPE absY = d_abs2(Yr, Yi);
-					wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
-					wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
-					d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
-					setElem(weightsR, prevError_col, wgt_col, wr);
-					setElem(weightsI, prevError_col, wgt_col, wi);
-				}
-			}
-		}
-		__syncthreads();
-	}
-	if (prevError_col < getNumElems(prevErrorMag.mdim)) {
-		setElemFlatten(prevErrorMag, prevError_col, prevErrorMag_val);
-		setElemFlatten(prevErrorAng, prevError_col, prevErrorAng_val);
-	}
-}
-
-__global__ void complexUpdateBiasKernel(const CudaMatrixArg<DTYPE> actR, const CudaMatrixArg<DTYPE> actI,
-	const CudaMatrixArg<DTYPE> errorMag, const CudaMatrixArg<DTYPE> errorAng, CudaMatrixArg<DTYPE> biasR, CudaMatrixArg<DTYPE> biasI, float lrnRate) {
-	// each kernel is called on a subvector of activations. update bias according to its contribution to the activation
-	// each thread is responsible for one activation + bias + error combination
-	unsigned int col = threadIdx.x + (blockIdx.x * VEC_SIZE); // a & b * err combination
-	if (col < getNumElems(biasR.mdim)) {
-		DTYPE Yr = getElemFlatten(actR, col);
-		DTYPE Yi = getElemFlatten(actI, col);
-		DTYPE wr = getElemFlatten(biasR, col);
-		DTYPE wi = getElemFlatten(biasI, col);
-		DTYPE errMag = getElemFlatten(errorMag, col);
-		DTYPE errAng = getElemFlatten(errorAng, col);
-		DTYPE dLdMag, dLdPhi;
-		get_dLdMag_dLdPhi(Yr, Yi, wr, wi, errMag, errAng, dLdMag, dLdPhi);
-		// apply LRN_RATE to dLdPhi; dLdMag later
-		dLdPhi *= lrnRate;
-		DTYPE dLdPhiR, dLdPhiI;
-		d_phi_to_comp(dLdPhi, dLdPhiR, dLdPhiI);
-		// multiply into result
-		// CHANGE - scale magnitude change by current magnitude
-		DTYPE absw = d_abs2(wr, wi);
-		if (absw > 0) {
-			// magnitude of input is 1
-			DTYPE absY = d_abs2(Yr, Yi);
-			wr += ((dLdMag - ALPHA * absY * absw) * (wr / absw)) * lrnRate;
-			wi += ((dLdMag - ALPHA * absY * absw) * (wi / absw)) * lrnRate;
-			d_cmp_mult(wr, wi, dLdPhiR, dLdPhiI, wr, wi); // write back the rotation into the weights
-			setElemFlatten(biasR, col, wr);
-			setElemFlatten(biasI, col, wi);
-		}
-		
-	}
-}
-
-
-cudaError_t complexBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI, // if input layer, error can be used to create adv examples
-	CudaMatrix<DTYPE>& d_prevErrorMag, CudaMatrix<DTYPE>& d_prevErrorAng, CudaMatrix<DTYPE>& d_weightsR, CudaMatrix<DTYPE>& d_weightsI, CudaMatrix<DTYPE>& d_nextBiasR, CudaMatrix<DTYPE>& d_nextBiasI,
-	const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE>& d_nextActI, const CudaMatrix<DTYPE>& d_nextErrorMag, const CudaMatrix<DTYPE>& d_nextErrorAng, float lrnRate) {
-	
-	// check that the dimensions fit
-	assert(d_prevActR.mdim == d_prevActI.mdim && d_prevActR.mdim == d_prevErrorMag.mdim); // prev parallel
-	assert(d_nextActR.mdim == d_nextActI.mdim && d_nextActR.mdim == d_nextErrorMag.mdim); // next parallel
-	assert(d_nextErrorMag.mdim == d_nextErrorAng.mdim && d_prevErrorMag.mdim == d_prevErrorAng.mdim);
-	assert(d_nextBiasR.mdim == d_nextBiasI.mdim && d_nextBiasR.mdim == d_nextActR.mdim); // next bias parallel
-	assert(d_weightsR.mdim == d_weightsI.mdim); // weights parallel
-	assert(d_prevActR.mdim.getNumElems() == d_weightsR.mdim.rdim && d_weightsR.mdim.cdim == d_nextActR.mdim.getNumElems()); // transfer
-
-	// compute next bias with the nextAct, nextBias, nextError
-	unsigned int num_vecs = d_nextBiasR.mdim.getNumElems() / VEC_SIZE;
-	if (d_nextBiasR.mdim.getNumElems() % VEC_SIZE != 0) {
-		++num_vecs;
-	}
-	complexUpdateBiasKernel <<< num_vecs, VEC_SIZE >>> (d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg(),
-		d_nextErrorMag.getCudaMatrixArg(), d_nextErrorAng.getCudaMatrixArg(), d_nextBiasR.getCudaMatrixArg(), d_nextBiasI.getCudaMatrixArg(), lrnRate);
-
-	cudaError_t cudaStatus = cudaGetLastError();
-	
-	if (cudaStatus != cudaSuccess) {
-		// Check for any errors launching the kernel
-		fprintf(stderr, "complexUpdateBiasKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-	}
-
-	// backpropagate error into prevError with prevAct, weights, nextAct, nextError, update weights
-	num_vecs = d_prevErrorMag.mdim.getNumElems() / VEC_SIZE;
-	if (d_prevErrorMag.mdim.getNumElems() % VEC_SIZE != 0) {
-		++num_vecs;
-	}
-	//const int ind = d_weightsR.mdim.getNumElems() / 2;
-	//Matrix<DTYPE> weightBefore(d_weightsR);
-	complexBackpropKernel <<< num_vecs, VEC_SIZE >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(),
-		d_prevErrorMag.getCudaMatrixArg(), d_prevErrorAng.getCudaMatrixArg(), d_weightsR.getCudaMatrixArg(), d_weightsI.getCudaMatrixArg(),
-		d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg(), d_nextErrorMag.getCudaMatrixArg(), d_nextErrorAng.getCudaMatrixArg(), lrnRate);
-	
-	//Matrix<DTYPE> weightAfter(d_weightsR);
-
-	//printf("Weight Ratio: After/Before = %5.5f\n", weightAfter.getElemFlatten(ind) / weightBefore.getElemFlatten(ind) - 1.0f);
-
-	cudaStatus = cudaGetLastError();
-
-	if (cudaStatus != cudaSuccess) {
-		// Check for any errors launching the kernel
-		fprintf(stderr, "complexBackpropKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
-	}
-
-	return cudaStatus;
-}
-
-__global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaMatrixArg<DTYPE> d_prevActI, CudaMatrixArg<DTYPE> d_prevErrorMag,
-	CudaMatrixArg<DTYPE> d_prevErrorAng, CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI,
+__global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE> d_prevError,
+	CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI, CudaMatrixArg<DTYPE> d_bias,
 	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const int actMap, const ConvParams convParams,
-	CudaMatrixArg<DTYPE> d_nextActR, CudaMatrixArg<DTYPE> d_nextActI, CudaMatrixArg<DTYPE> d_nextErrorMag, CudaMatrixArg<DTYPE> d_nextErrorAng) {
+	CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng, CudaMatrixArg<DTYPE> d_nextError) {
 	extern __shared__ DTYPE s[];
 	DTYPE* wgtR_s = s;
 	DTYPE* wgtI_s = &(s[getNumElems(d_weightsR.mdim)]);
@@ -622,8 +326,8 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaM
 	DTYPE* wgtErrPhi_s = &(s[3 * getNumElems(d_weightsR.mdim)]);
 	// where am i in prevAct?
 	int prevFlatInd = threadIdx.x + (blockDim.x * blockIdx.x);
-	int astride = d_prevActR.mdim.astride;
-	int rstride = d_prevActR.mdim.rstride;
+	int astride = d_prevAct.mdim.astride;
+	int rstride = d_prevAct.mdim.rstride;
 	int prevAisleInd = prevFlatInd / astride;
 	int prevRowInd = (prevFlatInd - (prevAisleInd * astride)) / rstride;
 	int prevColInd = prevFlatInd - (prevAisleInd * astride) - (prevRowInd * rstride);
@@ -636,42 +340,39 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaM
 	}
 	__syncthreads();
 	// if location in prevAct is valid
-	if (prevFlatInd < getNumElems(d_prevActR.mdim)) {
-		DTYPE eMagPrev = 0;
+	if (prevFlatInd < getNumElems(d_prevAct.mdim)) {
 		DTYPE eAngPrev = 0;
-		DTYPE xR = getElemFlatten(d_prevActR, prevFlatInd);
-		DTYPE xI = getElemFlatten(d_prevActI, prevFlatInd);
+		DTYPE x = PI * getElemFlatten(d_prevAct, prevFlatInd);
+		DTYPE xR = cosf(x);
+		DTYPE xI = sinf(x);
 		// iterate through the filter to calculate the contributed error to prev the filter
 		for (int fRow = 0; fRow < d_weightsR.mdim.rdim; ++fRow) {
 			for (int fCol = 0; fCol < d_weightsR.mdim.cdim; ++fCol) {
 				int nextRowInd = prevRowInd + (convParams.filterDim.rdim / 2) - fRow;
 				int nextColInd = prevColInd + (convParams.filterDim.cdim / 2) - fCol;
-				if (nextRowInd >= 0 && nextRowInd < d_nextActR.mdim.rdim && nextColInd >= 0 && nextColInd < d_nextActR.mdim.cdim) {
+				if (nextRowInd >= 0 && nextRowInd < d_nextAct.mdim.rdim && nextColInd >= 0 && nextColInd < d_nextAct.mdim.cdim) {
 					// use aisle of prev to select filter aisle
 					DTYPE wgtR = wgtR_s[getInd(d_weightsR.mdim, fRow, fCol, prevAisleInd)];
 					DTYPE wgtI = wgtI_s[getInd(d_weightsI.mdim, fRow, fCol, prevAisleInd)];
-					DTYPE errMag = getElem(d_nextErrorMag, nextRowInd, nextColInd, actMap); // error aisle corresponds to actMap
-					DTYPE errAng = getElem(d_nextErrorAng, nextRowInd, nextColInd, actMap);
-					DTYPE YR = getElem(d_nextActR, nextRowInd, nextColInd, actMap);
-					DTYPE YI = getElem(d_nextActI, nextRowInd, nextColInd, actMap);
+					DTYPE errMag = getElem(d_nextError, nextRowInd, nextColInd, actMap); // error aisle corresponds to actMap
+					DTYPE errAng = 0.0f;
+					DTYPE Y = getElem(d_nextAct, nextRowInd, nextColInd, actMap) - getElemFlatten(d_bias, actMap); // correct for bias
+					DTYPE Yang = getElem(d_nextActAng, nextRowInd, nextColInd, actMap);
+					DTYPE YR = Y * cosf(Yang);
+					DTYPE YI = Y * sinf(Yang);
 					// calculate gradient and atomic add to shared ErrMag, ErrPhi, add to local eMagPrev
 					DTYPE wxr, wxi;
 					d_cmp_mult(xR, xI, wgtR, wgtI, wxr, wxi);
 					DTYPE dLdMag, dLdPhi;
 					get_dLdMag_dLdPhi(YR, YI, wxr, wxi, errMag, errAng, dLdMag, dLdPhi);
-					eMagPrev += (d_abs2(wgtR, wgtI) * dLdMag);
 					eAngPrev += dLdPhi;
-					// atomic add the other things
-					dLdMag *= d_abs2(xR, xI);
 					atomicAdd(&(wgtErrMag_s[getInd(d_filterErrMag.mdim, fRow, fCol, prevAisleInd)]), dLdMag);
 					atomicAdd(&(wgtErrPhi_s[getInd(d_filterErrPhi.mdim, fRow, fCol, prevAisleInd)]), dLdPhi);
 				}
 			}
 		}
-		eMagPrev += getElemFlatten(d_prevErrorMag, prevFlatInd);
-		setElemFlatten(d_prevErrorMag, prevFlatInd, eMagPrev);
-		eAngPrev += getElemFlatten(d_prevErrorAng, prevFlatInd);
-		setElemFlatten(d_prevErrorAng, prevFlatInd, eAngPrev);
+		eAngPrev += getElemFlatten(d_prevError, prevFlatInd) / PI; // in radians
+		setElemFlatten(d_prevError, prevFlatInd, eAngPrev);
 	}
 	__syncthreads();
 	if (threadIdx.x < getNumElems(d_weightsR.mdim)) {
@@ -693,7 +394,7 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 	// CHANGE - scale magnitude change by current magnitude
 	DTYPE absw = d_abs2(wR, wI);
 	if (absw > 0.0f) {
-		eMag /= ((DTYPE)receptiveFieldSize);
+		//eMag /= ((DTYPE)receptiveFieldSize);
 		wR += ((eMag - ALPHA * absw) * (wR / absw)) * lrnRate;
 		wR += ((eMag - ALPHA * absw) * (wI / absw)) * lrnRate;
 		// rotate weights by dPhi
@@ -704,20 +405,40 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 	}
 }
 
-cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI,
-	CudaMatrix<DTYPE>& d_prevErrorMag, CudaMatrix<DTYPE>& d_prevErrorAng, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, const ConvParams& convParams,
-	const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE> d_nextActI, const CudaMatrix<DTYPE>& d_nextErrorMag, const CudaMatrix<DTYPE>& d_nextErrorAng, float lrnRate) {
+__global__ void updateKernelBias(const CudaMatrixArg<DTYPE> d_nextError, CudaMatrixArg<DTYPE> d_bias, const int filterNum, float lrnRate) {
+	extern __shared__ DTYPE s[]; // size of s is blockDim.x
+	int astride = d_nextError.mdim.astride;
+	s[threadIdx.x] = 0; // calculating sum
+	for (int fetchInd = threadIdx.x + (astride * filterNum); fetchInd < (filterNum + 1) * astride; fetchInd += blockDim.x) {
+		s[threadIdx.x] += getElemFlatten(d_nextError, fetchInd);
+	}
+	__syncthreads();
+	if (threadIdx.x == 0) {
+		// sum over the shared
+		DTYPE errSum = 0;
+		for (int i = 0; i < blockDim.x; ++i) {
+			errSum += s[i];
+		}
+		DTYPE bias = getElemFlatten(d_bias, filterNum);
+		scalarAdjustWeight(bias, 1.0f, errSum, lrnRate); // / ((DTYPE)astride), lrnRate);
+		setElemFlatten(d_bias, filterNum, bias);
+	}
+}
+
+cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
+	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams,
+	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE> d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
 	// check that the dimensions fit
-	assert(d_prevActR.mdim == d_prevActI.mdim && d_prevActR.mdim == d_prevErrorMag.mdim); // prev parallel
-	assert(d_prevErrorMag.mdim == d_prevErrorAng.mdim && d_nextErrorMag.mdim == d_nextErrorAng.mdim);
-	assert(d_nextActR.mdim == d_nextActI.mdim && d_nextActR.mdim == d_nextErrorMag.mdim); // next parallel
+	assert(d_prevAct.mdim == d_prevError.mdim); // prev parallel
+	assert(d_nextError.mdim == d_nextAct.mdim);
+	assert(d_nextAct.mdim == d_nextActAng.mdim); // next parallel
 	assert(d_weightsR[0].mdim == d_weightsI[0].mdim); // weights parallel
 
 	cudaError_t cudaStatus(cudaSuccess);
 
 	const int linearBlock = BLOCK_SIZE * BLOCK_SIZE;
-	int numLinearBlocks = d_prevActR.mdim.getNumElems() / linearBlock;
-	if (d_prevActR.mdim.getNumElems() % linearBlock != 0) {
+	int numLinearBlocks = d_prevAct.mdim.getNumElems() / linearBlock;
+	if (d_prevAct.mdim.getNumElems() % linearBlock != 0) {
 		++numLinearBlocks;
 	}
 
@@ -734,11 +455,11 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, con
 		setValueWithCuda(d_filterErrPhi, 0);
 
 		complexConvBackpropKernel <<< numLinearBlocks, linearBlock, sharedSize >>>
-			(d_prevActR.getCudaMatrixArg(),	d_prevActI.getCudaMatrixArg(), d_prevErrorMag.getCudaMatrixArg(), 
-				d_prevErrorAng.getCudaMatrixArg(), d_weightsR[actMap].getCudaMatrixArg(), d_weightsI[actMap].getCudaMatrixArg(), 
+			(d_prevAct.getCudaMatrixArg(), d_prevError.getCudaMatrixArg(), 
+				d_weightsR[actMap].getCudaMatrixArg(), d_weightsI[actMap].getCudaMatrixArg(), d_bias.getCudaMatrixArg(),
 				d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), actMap, convParams, 
-				d_nextActR.getCudaMatrixArg(), d_nextActI.getCudaMatrixArg(), 
-				d_nextErrorMag.getCudaMatrixArg(), d_nextErrorAng.getCudaMatrixArg());
+				d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg(), 
+				d_nextError.getCudaMatrixArg());
 
 		cudaStatus = cudaGetLastError();
 
@@ -753,7 +474,7 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, con
 		MatrixDim fDim(convParams.filterDim);
 		// filter error needs to be reincorporated into weights
 		complexUpdateKernelWeights <<< 1, dim3(fDim.cdim, fDim.rdim, fDim.adim) >>> (d_weightsR[actMap].getCudaMatrixArg(),
-			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate, d_prevActR.mdim.rdim * d_prevActR.mdim.cdim);
+			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate, d_prevAct.mdim.rdim * d_prevAct.mdim.cdim);
 		
 		cudaStatus = cudaGetLastError();
 
@@ -761,78 +482,361 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, con
 			// Check for any errors launching the kernel
 			fprintf(stderr, "complexUpdateKernelWeights launch failed: %s\n", cudaGetErrorString(cudaStatus));
 		}
+
+		updateKernelBias <<< 1, VEC_SIZE, VEC_SIZE * sizeof(DTYPE) >>> (d_nextError.getCudaMatrixArg(), d_bias.getCudaMatrixArg(), actMap, lrnRate);
+
 	}
 
 	return cudaStatus;
 }
 
-__global__ void complexAvgPoolBackpropKernel(CudaMatrixArg<DTYPE> d_prevActR, CudaMatrixArg<DTYPE> d_prevActI,
-	CudaMatrixArg<DTYPE> d_prevErrorMag, CudaMatrixArg<DTYPE> d_prevErrorAng, const ConvParams convParams, CudaMatrixArg<DTYPE> d_nextActR, 
-	CudaMatrixArg<DTYPE> d_nextActI, CudaMatrixArg<DTYPE> d_nextErrorMag, CudaMatrixArg<DTYPE> d_nextErrorAng) {
-	// where am i in prevError?
-	int prevFlatInd = threadIdx.x + (blockDim.x * blockIdx.x);
-	int astride = d_prevErrorMag.mdim.astride;
-	int rstride = d_prevErrorMag.mdim.rstride;
-	int prevAisleInd = prevFlatInd / astride;
-	int prevRowInd = (prevFlatInd - (prevAisleInd * astride)) / rstride;
-	int prevColInd = prevFlatInd - (prevAisleInd * astride) - (prevRowInd * rstride);
-	// could use shared memory of nextAct for each of the receptive fields but will save that for later
-	int nextRowInd = prevRowInd / convParams.stride;
-	int nextColInd = prevColInd / convParams.stride;
-	// calculate the derivative of the Loss wrt magnitude for these constant weights
-	if (prevAisleInd < d_prevErrorMag.mdim.adim && prevRowInd < d_prevErrorMag.mdim.rdim && prevColInd < d_prevErrorMag.mdim.cdim) { // if fit in prevAct, should fit in nextAct
-		DTYPE nErrMag = getElem(d_nextErrorMag, nextRowInd, nextColInd, prevAisleInd);
-		DTYPE nErrAng = getElem(d_nextErrorAng, nextRowInd, nextColInd, prevAisleInd);
-		DTYPE dLdMag, dLdPhi;
-		DTYPE wri = 1.0f / ((DTYPE)(convParams.stride * convParams.stride));
-		DTYPE wxr = getElem(d_prevActR, prevRowInd, prevColInd, prevAisleInd)* wri;
-		DTYPE wxi = getElem(d_prevActI, prevRowInd, prevColInd, prevAisleInd)* wri;
-		DTYPE Yr = getElem(d_nextActR, nextRowInd, nextColInd, prevAisleInd);
-		DTYPE Yi = getElem(d_nextActI, nextRowInd, nextColInd, prevAisleInd);
-		get_dLdMag_dLdPhi(Yr, Yi, wxr, wxi, nErrMag, nErrAng, dLdMag, dLdPhi);
+__global__ void scalarVecMatMulKernel(const CudaMatrixArg<DTYPE> d_opVec, const CudaMatrixArg<DTYPE> d_opMat, CudaMatrixArg<DTYPE> d_resVec) {
+	
+	int resVecInd = threadIdx.x + (VEC_SIZE * blockIdx.x);
+	
+	// iterate through the opVec, fetch shared memory
+	int numOpVecIts = getNumElems(d_opVec.mdim) / VEC_SIZE;
+	if (numOpVecIts * VEC_SIZE < getNumElems(d_opVec.mdim))
+		++numOpVecIts;
 
-		// multiply dLdMag by magnitude of weight to get projected mag error
-		dLdMag *= wri;
-		setElem(d_prevErrorMag, prevRowInd, prevColInd, dLdMag, prevAisleInd);
-		setElem(d_prevErrorAng, prevRowInd, prevColInd, dLdPhi, prevAisleInd);
+	__shared__ DTYPE d_opVec_s[VEC_SIZE];
+
+	DTYPE resVal = 0;
+
+	for (int opVecIt = 0; opVecIt < numOpVecIts; ++opVecIt) {
+		int fetchOpVecInd = threadIdx.x + (VEC_SIZE * opVecIt);
+		// fetch shared data
+		if (fetchOpVecInd < getNumElems(d_opVec.mdim)) {
+			d_opVec_s[threadIdx.x] = getElemFlatten(d_opVec, fetchOpVecInd);
+		}
+
+		__syncthreads();
+
+		// compute dot product and add to result
+		for (int dot_it = 0; dot_it < VEC_SIZE; ++dot_it) {
+			int opVecInd = opVecIt * VEC_SIZE + dot_it;
+			if (resVecInd < getNumElems(d_resVec.mdim) && opVecInd < getNumElems(d_opVec.mdim)) {
+				resVal += d_opVec_s[dot_it] * getElem(d_opMat, opVecInd, resVecInd);
+			}
+		}
+		__syncthreads();
+	}
+	if (resVecInd < getNumElems(d_resVec.mdim)) {
+		setElemFlatten(d_resVec, resVecInd, resVal);
 	}
 }
 
-cudaError_t complexAvgPoolBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevActR, const CudaMatrix<DTYPE>& d_prevActI, CudaMatrix<DTYPE>& d_prevErrorMag,
-	CudaMatrix<DTYPE>& d_prevErrorAng, const ConvParams& convParams, const CudaMatrix<DTYPE>& d_nextActR, const CudaMatrix<DTYPE> d_nextActI, 
-	const CudaMatrix<DTYPE>& d_nextErrorMag, const CudaMatrix<DTYPE>& d_nextErrorAng) {
-	assert(d_prevActR.mdim == d_prevActI.mdim && d_prevActR.mdim == d_prevErrorMag.mdim); // prev parallel
-	assert(d_nextActR.mdim == d_nextActI.mdim && d_nextActR.mdim == d_nextErrorMag.mdim); // next parallel
-	assert(d_nextErrorMag.mdim == d_nextErrorAng.mdim && d_prevErrorMag.mdim == d_prevErrorAng.mdim);
-	assert(d_prevActR.mdim.getNumElems() / (convParams.stride * convParams.stride) == d_nextActR.mdim.getNumElems()); // downsample
-	assert(d_prevActR.mdim.adim == d_nextActR.mdim.adim && d_prevActR.mdim.adim == convParams.numFilters); // preserve number of actMaps
-
-	// loop through aisle layer and launch blocks
-	const int linearBlock = BLOCK_SIZE * BLOCK_SIZE;
-	int numLinearBlocks = d_prevErrorMag.mdim.getNumElems() / linearBlock;
-	if (d_prevErrorMag.mdim.getNumElems() % linearBlock != 0) {
-		++numLinearBlocks;
+__global__ void scalarAddBiasKernel(CudaMatrixArg<DTYPE> d_act, const CudaMatrixArg<DTYPE> d_bias) {
+	int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_act.mdim)) {
+		DTYPE res = getElemFlatten(d_act, flatInd) + getElemFlatten(d_bias, flatInd);
+		setElemFlatten(d_act, flatInd, res);
 	}
+}
 
-	cudaError_t cudaStatus(cudaSuccess);
+__global__ void scalarActFuncKernel(CudaMatrixArg<DTYPE> d_act, scalarActFunc actFunc) {
+	int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_act.mdim)) {
+		DTYPE res = (*actFunc)(getElemFlatten(d_act, flatInd));
+		setElemFlatten(d_act, flatInd, res);
+	}
+}
 
-	complexAvgPoolBackpropKernel <<< numLinearBlocks, linearBlock >>> (d_prevActR.getCudaMatrixArg(), d_prevActI.getCudaMatrixArg(),
-		d_prevErrorMag.getCudaMatrixArg(), d_prevErrorAng.getCudaMatrixArg(), convParams, d_nextActR.getCudaMatrixArg(), 
-		d_nextActI.getCudaMatrixArg(), d_nextErrorMag.getCudaMatrixArg(), d_nextErrorAng.getCudaMatrixArg());
+cudaError_t scalarFCForwardPropWithCuda(const CudaMatrix<DTYPE>& d_opVec, const CudaMatrix<DTYPE>& d_opMat, const CudaMatrix<DTYPE>& d_bias, CudaMatrix<DTYPE>& d_resVec, ActivationType actType) {
+	assert(d_opVec.mdim.getNumElems() == d_opMat.mdim.rdim && d_opMat.mdim.cdim == d_resVec.mdim.getNumElems());
+	assert(d_bias.mdim == d_resVec.mdim);
 	
-	/*Matrix<DTYPE> t_nextErrorMag(d_nextErrorMag);
-	Matrix<DTYPE> t_nextErrorAng(d_nextErrorAng);
-	printf("AvgPool NextErrorMag: ");
-	for (int actMap = 0; actMap < d_nextErrorMag.mdim.adim; ++actMap) {
-		printf("%d %5.5f \t", actMap, t_nextErrorMag.getElem(7, 7, actMap));
+	scalarActFunc actFunc;
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_sigmoidFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
 	}
-	printf("\n");*/
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol relu failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+	int numVecIts = d_resVec.mdim.getNumElems() / VEC_SIZE;
+	if (numVecIts * VEC_SIZE < d_resVec.mdim.getNumElems())
+		++numVecIts;
+
+	scalarVecMatMulKernel <<< numVecIts, VEC_SIZE >>> (d_opVec.getCudaMatrixArg(), d_opMat.getCudaMatrixArg(), d_resVec.getCudaMatrixArg());
+
+	cudaStatus = cudaGetLastError();
+	
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarVecMatMulKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+	scalarAddBiasKernel <<< numVecIts, VEC_SIZE >>> (d_resVec.getCudaMatrixArg(), d_bias.getCudaMatrixArg());
+
 	cudaStatus = cudaGetLastError();
 
 	if (cudaStatus != cudaSuccess) {
-		// Check for any errors launching the kernel
-		fprintf(stderr, "complexAvgPoolBackprop launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		fprintf(stderr, "scalarAddBiasKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
 	}
 
-	return cudaSuccess;
+	scalarActFuncKernel <<< numVecIts, VEC_SIZE >>> (d_resVec.getCudaMatrixArg(), actFunc);
+
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarActFuncKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+	
+	return cudaStatus;
+}
+
+__global__ void scalarAvgPoolKernel(const int actMap, const CudaMatrixArg<DTYPE> d_prevAct, ConvParams convParams, CudaMatrixArg<DTYPE> d_nextAct, scalarActFunc actFunc) {
+	int nextRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	int nextColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	if (nextRowInd < d_nextAct.mdim.rdim && nextColInd < d_nextAct.mdim.cdim) {
+		int prevRowInd = nextRowInd * convParams.stride;
+		int prevColInd = nextColInd * convParams.stride;
+		DTYPE result = 0;
+		for (int f_row = 0; f_row < convParams.stride; ++f_row) {
+			for (int f_col = 0; f_col < convParams.stride; ++f_col) {
+				result += getElem(d_prevAct, prevRowInd + f_row, prevColInd + f_col, actMap);
+			}
+		}
+		result /= ((DTYPE)(convParams.stride * convParams.stride));
+		result = actFunc(result);
+		setElem(d_nextAct, nextRowInd, nextColInd, result, actMap);
+	}
+}
+
+cudaError_t scalarAvgPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const ConvParams& convParams, CudaMatrix<DTYPE>& d_nextAct, ActivationType actType) {
+
+	assert(d_prevAct.mdim.adim == d_nextAct.mdim.adim);
+	assert(d_prevAct.mdim.rdim / convParams.stride == d_nextAct.mdim.rdim && d_prevAct.mdim.cdim / convParams.stride == d_nextAct.mdim.cdim);
+
+	scalarActFunc actFunc;
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_sigmoidFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol relu failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+	
+	// tile up nextAct and average over d_prevAct receptive field
+
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+
+	int numRowIts = d_nextAct.mdim.rdim / BLOCK_SIZE;
+	if (numRowIts * BLOCK_SIZE < d_nextAct.mdim.rdim)
+		++numRowIts;
+	int numColIts = d_nextAct.mdim.cdim / BLOCK_SIZE;
+	if (numColIts * BLOCK_SIZE < d_nextAct.mdim.cdim)
+		++numColIts;
+
+	dim3 gridDim(numColIts, numRowIts); // x, y
+	for (int actMap = 0; actMap < d_prevAct.mdim.adim; ++actMap)
+		scalarAvgPoolKernel <<< gridDim, blockDim >>> (actMap, d_prevAct.getCudaMatrixArg(), convParams, d_nextAct.getCudaMatrixArg(), actFunc);
+
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarAvgPoolKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	return cudaStatus;
+}
+
+__global__ void transposeMatKernel(CudaMatrixArg<DTYPE> d_orig, CudaMatrixArg<DTYPE> d_trans) {
+	int colInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	int rowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	if (colInd < d_orig.mdim.cdim && rowInd < d_orig.mdim.rdim) {
+		setElem(d_trans, colInd, rowInd, getElem(d_orig, rowInd, colInd));
+	}
+}
+
+__global__ void scalarUpdateBiasKernel(CudaMatrixArg<DTYPE> d_nextError, CudaMatrixArg<DTYPE> d_nextBias, float lrnRate) {
+	int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_nextError.mdim)) {
+		DTYPE err = getElemFlatten(d_nextError, flatInd);
+		DTYPE wgt = getElemFlatten(d_nextBias, flatInd);
+		scalarAdjustWeight(wgt, ((DTYPE)1.0f), err, lrnRate);
+		setElemFlatten(d_nextBias, flatInd, wgt);
+	}
+}
+
+__global__ void scalarUpdateMatrixKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE> d_weights, CudaMatrixArg<DTYPE> d_nextError, float lrnRate) {
+	int wgtRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	int wgtColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	if (wgtRowInd < d_weights.mdim.rdim && wgtColInd < d_weights.mdim.cdim) {
+		DTYPE wgt = getElem(d_weights, wgtRowInd, wgtColInd);
+		DTYPE inp = getElemFlatten(d_prevAct, wgtRowInd);
+		DTYPE err = getElemFlatten(d_nextError, wgtColInd);
+		scalarAdjustWeight(wgt, inp, err, lrnRate);
+		setElem(d_weights, wgtRowInd, wgtColInd, wgt);
+	}
+}
+
+__global__ void scalarActDerivFuncKernel(const CudaMatrixArg<DTYPE> d_act, CudaMatrixArg<DTYPE> d_err, scalarActFunc actDerivFunc) {
+	int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_act.mdim)) {
+		DTYPE deriv = (*actDerivFunc)(getElemFlatten(d_act, flatInd));
+		DTYPE product = deriv * getElemFlatten(d_err, flatInd);
+		setElemFlatten(d_err, flatInd, product);
+	}
+}
+
+cudaError_t scalarFCBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>& d_weights, const CudaMatrix<DTYPE>& d_nextAct,
+	const CudaMatrix<DTYPE>& d_nextError, CudaMatrix<DTYPE>& d_nextBias, ActivationType actType, float lrnRate) {
+	assert(d_prevError.mdim.getNumElems() == d_weights.mdim.rdim && d_weights.mdim.cdim == d_nextAct.mdim.getNumElems());
+	assert(d_nextAct.mdim == d_nextError.mdim && d_nextAct.mdim == d_nextBias.mdim);
+
+	int numRowIts = d_weights.mdim.rdim / BLOCK_SIZE;
+	if (numRowIts * BLOCK_SIZE < d_weights.mdim.rdim)
+		++numRowIts;
+	int numColIts = d_weights.mdim.cdim / BLOCK_SIZE;
+	if (numColIts * BLOCK_SIZE < d_weights.mdim.cdim)
+		++numColIts;
+
+	scalarActFunc actDerivFunc;
+	
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_sigmoidDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actDerivfunc not implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol reluDeriv failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// calculate activation function derivative of nextError
+	scalarActDerivFuncKernel <<< (numColIts+1)/2, BLOCK_SIZE*2 >>> (d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarActFuncKerel FCBackprop launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// update the bias
+	scalarUpdateBiasKernel <<< (numColIts + 1) / 2, BLOCK_SIZE * 2 >>> (d_nextError.getCudaMatrixArg(), d_nextBias.getCudaMatrixArg(), lrnRate);
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarUpdateBiasKernel FCBackprop launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// transpose the matrix
+
+	dim3 gridDim(numColIts, numRowIts); // x, y
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+
+	CudaMatrix<DTYPE> d_weightsT(d_weights.mdim.transpose());
+	transposeMatKernel <<< gridDim, blockDim >>> (d_weights.getCudaMatrixArg(), d_weightsT.getCudaMatrixArg());
+
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "transposeMatKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// propagate error backwards
+	scalarVecMatMulKernel <<< (numRowIts + 1) / 2, BLOCK_SIZE * 2 >>>(d_nextError.getCudaMatrixArg(), d_weightsT.getCudaMatrixArg(), d_prevError.getCudaMatrixArg());
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarVecMatMulKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// update FC matrix
+	scalarUpdateMatrixKernel <<< gridDim, blockDim >>> (d_prevAct.getCudaMatrixArg(), d_weights.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), lrnRate);
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarUpdateMatrixKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	return cudaStatus;
+}
+
+__global__ void scalarAvgPoolBackpropKernel(const int actMap, CudaMatrixArg<DTYPE> d_prevError, ConvParams convParams,
+	CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextError, scalarActFunc actDerivFunc) {
+	int prevRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	int prevColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	int nextRowInd = nextRowInd / convParams.stride;
+	int nextColInd = nextColInd / convParams.stride;
+	if (prevRowInd < d_prevError.mdim.rdim && prevColInd < d_prevError.mdim.cdim && nextRowInd < d_nextAct.mdim.rdim && nextColInd < d_nextAct.mdim.cdim) {
+		DTYPE err = getElem(d_nextError, nextRowInd, nextColInd, actMap);
+		err *= actDerivFunc(getElem(d_nextAct, nextRowInd, nextColInd, actMap));
+		err /= ((DTYPE)(convParams.stride * convParams.stride));
+		setElem(d_prevError, prevRowInd, prevColInd, err, actMap);
+	}
+}
+
+cudaError_t scalarAvgPoolBackpropWithCuda(CudaMatrix<DTYPE>& d_prevError, const ConvParams& convParams, 
+	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE> d_nextError, ActivationType actType) {
+
+	assert(d_prevError.mdim.adim == d_nextAct.mdim.adim);
+	assert(d_nextAct.mdim == d_nextError.mdim);
+	assert(d_prevError.mdim.rdim / convParams.stride == d_nextAct.mdim.rdim && d_prevError.mdim.cdim / convParams.stride == d_nextAct.mdim.cdim);
+
+	scalarActFunc actDerivFunc;
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_sigmoidDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol relu failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// tile up nextAct and average over d_prevAct receptive field
+
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+
+	int numRowIts = d_prevError.mdim.rdim / BLOCK_SIZE;
+	if (numRowIts * BLOCK_SIZE < d_prevError.mdim.rdim)
+		++numRowIts;
+	int numColIts = d_prevError.mdim.cdim / BLOCK_SIZE;
+	if (numColIts * BLOCK_SIZE < d_prevError.mdim.cdim)
+		++numColIts;
+
+	dim3 gridDim(numColIts, numRowIts); // x, y
+	for (int actMap = 0; actMap < d_prevError.mdim.adim; ++actMap) {
+		scalarAvgPoolBackpropKernel <<< gridDim, blockDim >>> (actMap, d_prevError.getCudaMatrixArg(), convParams,
+			d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
+	}
+
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarAvgPoolKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	return cudaStatus;
 }

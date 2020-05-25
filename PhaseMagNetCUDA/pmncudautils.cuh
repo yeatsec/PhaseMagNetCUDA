@@ -12,16 +12,21 @@
 #define VEC_SIZE 32
 
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
-#define WGT_HIGH 0.01f
-#define WGT_LOW 0.0f
+
 
 #define PI 3.14159265f
 
-enum class LayerType { input, fc, conv, maxpool, avgpool };
-enum class ActivationType { relu, softmax };
+enum class LayerType { input, fc, conv, maxpool, avgpool, phasorconv};
+enum class ActivationType { relu, sigmoid, softmax };
+
 
 typedef float DTYPE; // data type for neural activation and weights
 typedef unsigned char uchar;
+
+
+using scalarActFunc = DTYPE(*) (DTYPE);
+
+
 
 // forward declarations
 template <typename T>
@@ -40,6 +45,16 @@ struct MatrixDim {
 	}
 	const unsigned int getNumElems() const {
 		return adim * rdim * cdim;
+	}
+	MatrixDim transpose(void) {
+		MatrixDim temp;
+		temp.adim = adim;
+		temp.rdim = cdim;
+		temp.cdim = rdim;
+		temp.size = size;
+		temp.astride = astride;
+		temp.rstride = temp.cdim;
+		return temp;
 	}
 };
 
@@ -275,44 +290,36 @@ struct LayerParams {
 
 struct Layer {
 	LayerParams layParams;
-	CudaMatrix<DTYPE> layerDataR; // default to n-vector, (1, N)
-	CudaMatrix<DTYPE> layerDataI;
-	CudaMatrix<DTYPE> errorDataMag;
-	CudaMatrix<DTYPE> errorDataAng;
-	CudaMatrix<DTYPE> biasR;
-	CudaMatrix<DTYPE> biasI;
+	CudaMatrix<DTYPE> layerData; // default to n-vector, (1, N)
+	CudaMatrix<DTYPE> layerDataAng;
+	CudaMatrix<DTYPE> errorData;
+	CudaMatrix<DTYPE> bias;
 	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsPrevI; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsNextR; // same as prev
 	CudaMatrix<DTYPE>* weightsNextI;
 	Layer(const LayerParams& lp) :
 		layParams(lp),
-		layerDataR(lp.matDim),
-		layerDataI(lp.matDim),
-		errorDataMag(lp.matDim),
-		errorDataAng(lp.matDim),
-		biasR(lp.matDim),
-		biasI(lp.matDim),
+		layerData(lp.matDim),
+		layerDataAng(lp.matDim),
+		errorData(lp.matDim),
+		bias(lp.matDim),
 		weightsPrevR(nullptr),
 		weightsPrevI(nullptr),
 		weightsNextR(nullptr),
 		weightsNextI(nullptr)
 	{
 		// account for layer
-		Matrix<DTYPE> temp(biasR.mdim);
-		temp.fillRandom(-0.01, 0.01);
-		biasR.fillFromMatrix(temp);
-		temp.fillRandom(-0.01, 0.01);
-		biasI.fillFromMatrix(temp);
+		Matrix<DTYPE> temp(bias.mdim);
+		temp.fill(0.0); // He initialization
+		bias.fillFromMatrix(temp);
 	}
 	Layer(const Layer& toCopy) :
 		layParams(toCopy.layParams),
-		layerDataR(toCopy.layerDataR),
-		layerDataI(toCopy.layerDataI),
-		errorDataMag(toCopy.errorDataMag),
-		errorDataAng(toCopy.errorDataAng),
-		biasR(toCopy.biasR),
-		biasI(toCopy.biasI),
+		layerData(toCopy.layerData),
+		layerDataAng(toCopy.layerDataAng),
+		errorData(toCopy.errorData),
+		bias(toCopy.bias),
 		weightsPrevR(toCopy.weightsPrevR), // shallow copy
 		weightsPrevI(toCopy.weightsPrevI),
 		weightsNextR(toCopy.weightsNextR),
@@ -323,12 +330,10 @@ struct Layer {
 	Layer& operator=(Layer other) {
 		if (&other != this) {
 			std::swap(layParams, other.layParams);
-			std::swap(layerDataR, other.layerDataR);
-			std::swap(layerDataI, other.layerDataI);
-			std::swap(errorDataMag, other.errorDataMag);
-			std::swap(errorDataAng, other.errorDataAng);
-			std::swap(biasR, other.biasR);
-			std::swap(biasI, other.biasI);
+			std::swap(layerData, other.layerData);
+			std::swap(layerDataAng, other.layerDataAng);
+			std::swap(errorData, other.errorData);
+			std::swap(bias, other.bias);
 			weightsPrevR = other.weightsPrevR; // shallow copy
 			weightsPrevI = other.weightsPrevI;
 			weightsNextR = other.weightsNextR;
@@ -361,19 +366,28 @@ struct Layer {
 		for (unsigned int s = 0; s < numSets; ++s) {
 			weightsPrevR[s] = CudaMatrix<DTYPE>(matDim);
 			weightsPrevI[s] = CudaMatrix<DTYPE>(matDim);
-			DTYPE denom;
+			DTYPE denom, r1, sign;
 			if (numSets > 1) { // indicates convolution
 				denom = ((DTYPE)(matDim.getNumElems()));
+				for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
+					// random number generator to initialize weights
+					DTYPE ang = 2* PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+					DTYPE mag = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+					tempR.data[i] = mag * sqrtf(2.0f / denom) * cosf(ang);
+					tempI.data[i] = mag * sqrtf(2.0f / denom) * sinf(ang);
+				}
 			}
 			else { // indicates FC
 				denom = ((DTYPE) (matDim.rdim));
-			}
-			for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
-				// random number generator to initialize weights
-				DTYPE ang = PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
-				DTYPE mag = 1.0f / denom;
-				tempR.data[i] = mag * cosf(ang);
-				tempI.data[i] = mag * sinf(ang);
+				for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
+					// random number generator to initialize weights
+					r1 = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+					sign = (rand() > RAND_MAX / 2) ? 1.0f : -1.0f;
+					tempR.data[i] = sign * r1 * sqrtf(2.0f / denom);
+					sign = (rand() > RAND_MAX / 2) ? 1.0f : -1.0f;
+					r1 = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+					tempI.data[i] = sign * r1 * sqrtf(2.0f / denom);
+				}
 			}
 			weightsPrevR[s].fillFromMatrix(tempR);
 			weightsPrevI[s].fillFromMatrix(tempI);
