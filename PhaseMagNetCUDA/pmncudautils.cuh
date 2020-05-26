@@ -36,14 +36,14 @@ struct CudaMatrix;
 
 // add adim, remove stride
 struct MatrixDim {
-	size_t adim, rdim, cdim, size, astride, rstride;
-	MatrixDim(const size_t rdim, const size_t cdim, const size_t size_of_data_type, const size_t adim = 1) :
+	unsigned int adim, rdim, cdim, size, astride, rstride;
+	MatrixDim(const unsigned int rdim, const unsigned int cdim, const unsigned int size_of_data_type, const unsigned int adim = 1) :
 		adim(adim), rdim(rdim), cdim(cdim), size(adim * rdim * cdim * size_of_data_type), astride(rdim*cdim), rstride(cdim) {}
 	MatrixDim() : adim(1), rdim(1), cdim(1), size(1), astride(1), rstride(1) {};
 	bool operator==(const MatrixDim& other) const {
 		return (adim == other.adim && rdim == other.rdim && cdim == other.cdim && size == other.size);
 	}
-	const unsigned int getNumElems() const {
+	unsigned int getNumElems() const {
 		return adim * rdim * cdim;
 	}
 	MatrixDim transpose(void) {
@@ -60,13 +60,13 @@ struct MatrixDim {
 
 struct ConvParams {
 	MatrixDim filterDim;
-	size_t stride, pad, numFilters;
+	unsigned int stride, pad, numFilters;
 	ConvParams() : filterDim(), stride(0), pad(0), numFilters(1) {}
 	/*
 		Conv - set stride = 0, pad = 0, filterDim to 5x5, numFilters configurable
 		Avgpool - stride configurable, pad = 0, filterDim.rdim,cdim = stride, filterDim.adim = 1, numFilters must equal that of prev
 	*/
-	MatrixDim getNextActDim(const MatrixDim & prevActDim, const size_t sizeOfDtype) {
+	MatrixDim getNextActDim(const MatrixDim & prevActDim, const unsigned int sizeOfDtype) {
 		assert(prevActDim.adim == filterDim.adim);
 		MatrixDim outDim;
 		outDim.adim = numFilters;
@@ -118,7 +118,7 @@ struct Matrix {
 	~Matrix() {
 		delete[] data;
 	}
-	const size_t getNumElems(void) const {
+	unsigned int getNumElems(void) const {
 		return mdim.getNumElems();
 	}
 	void fill(const T& value) {
@@ -139,6 +139,11 @@ struct Matrix {
 	void fillFromUbyte(const uchar* const ucharptr) {
 		for (size_t i = 0; i < getNumElems(); ++i) {
 			data[i] = (DTYPE)(ucharptr[i]) / 255.0f;
+		}
+	}
+	void dumpToUbyte(uchar* ucharptr) {
+		for (unsigned int i = 0; i < getNumElems(); ++i) {
+			ucharptr[i] = ((uchar)(data[i] * 255.0f));
 		}
 	}
 	void fillRandom(T minval, T maxval) {
@@ -181,20 +186,20 @@ struct Matrix {
 			data[i] += addFrom.data[i];
 		}
 	}
-	const size_t getInd(const size_t& row, const size_t& col, const size_t& aisle = 0) const {
+	unsigned int getInd(const unsigned int& row, const unsigned int& col, const unsigned int& aisle = 0) const {
 		return (aisle * mdim.rdim * mdim.cdim) + (row * mdim.cdim) + col;
 	}
-	const T& getElem(const size_t& row, const size_t& col, const size_t& aisle = 0) const {
+	const T& getElem(const unsigned int& row, const unsigned int& col, const unsigned int& aisle = 0) const {
 		return data[getInd(row, col, aisle)];
 	}
-	void setElem(const size_t& row, const size_t& col, const T& value, const size_t& aisle = 0) {
+	void setElem(const unsigned int& row, const unsigned int& col, const T& value, const unsigned int& aisle = 0) {
 		data[getInd(row, col, aisle)] = value; // all host side, should be cdim because it is typed
 	}
-	const T& getElemFlatten(const size_t& ind) const {
+	const T& getElemFlatten(const unsigned int& ind) const {
 		assert(ind < getNumElems());
 		return data[ind];
 	}
-	void setElemFlatten(const size_t& ind, const T& value) {
+	void setElemFlatten(const unsigned int& ind, const T& value) {
 		data[ind] = value;
 	}
 };

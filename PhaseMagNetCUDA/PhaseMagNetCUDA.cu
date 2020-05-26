@@ -6,6 +6,7 @@
 #include <iostream>
 #include <fstream>
 
+
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
@@ -41,10 +42,11 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			LinkedListNode<Layer>* prevNodePtr = ptr->getPrev();
 			Layer* prevPtr = prevNodePtr->getElemPtr();
 			MatrixDim matDim;
-			size_t numSets = 1;
+			unsigned int numSets = 1;
 			switch (elemPtr->layParams.layType) {
-			case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
+			//case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
 			case LayerType::avgpool:
+			case LayerType::conv:
 			case LayerType::phasorconv: // ensure that the dimensions match up
 				// expect that the dimensions for both the conv filters and activation maps are set
 				assert(elemPtr->layParams.convParams.getNextActDim(prevPtr->layParams.matDim, 
@@ -52,7 +54,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 				matDim = elemPtr->layParams.convParams.filterDim;
 				numSets = elemPtr->layParams.convParams.numFilters;
 				break;
-			default:
+			case LayerType::fc:
 				matDim.adim = 1;
 				matDim.rdim = prevPtr->layParams.matDim.getNumElems();
 				matDim.cdim = elemPtr->layParams.matDim.getNumElems();
@@ -60,6 +62,8 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 				matDim.astride = matDim.rdim * matDim.cdim;
 				matDim.rstride = matDim.cdim;
 				break;
+			default:
+				throw std::logic_error("Layer Type not implemented\n");
 			}
 			// currently hardcoded for fully connected
 			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set
@@ -105,11 +109,11 @@ void PhaseMagNetCUDA::addLayer(const LayerParams& lp) {
 	layers.append(lay);
 }
 
-void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose) {
+void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose) {
 	assert(initialized);
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
 	ex.fill(0.0);
-	for (size_t i = 0; i < num_examples; ++i) {
+	for (unsigned int i = 0; i < num_examples; ++i) {
 		ex.setElem(0, labels[i], 1.0);
 		setInput(inputData[i]);
 		resetState(); // doesn't overwrite input
@@ -121,7 +125,7 @@ void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar*
 		if (verbose) {
 			printf("Training Progress: %5.2f\t\r", 100.0 * ((float)i+1) / ((float)num_examples));
 		}
-		Matrix<DTYPE>& output = getOutput();
+		Matrix<DTYPE> output(getOutput());
 		if (isnan(output.getElem(0, 0))) {
 			printf("\nisNaN output\n");
 			throw std::runtime_error("output isNaN\n");
@@ -130,20 +134,61 @@ void PhaseMagNetCUDA::train(const size_t num_examples, uchar** inputData, uchar*
 	printf("\n");
 }
 
-Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputData, bool verbose) {
+
+void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_examples, const unsigned int img_rows, const unsigned int img_cols, uchar** inputData, uchar* labels, float epsilon, int numIts, bool targeted, bool verbose) {
+	assert(initialized);
+	assert(numIts > 0);
+	std::cout << "Generating Adversarial Examples for File " << name << std::endl;
+	printf("Allocating Adversarial Output Size: %d Images %d ImageSize\n", num_examples, img_rows * img_cols);
+	uchar** outputData = new uchar * [num_examples];
+	for (unsigned int i = 0; i < num_examples; ++i) {
+		outputData[i] = new uchar[img_rows * img_cols];
+	}
+	printf("Output Allocated\n");
+	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
+	ex.fill(0.0);
+	float stepEpsilon = epsilon / ((float)numIts);
+	for (unsigned int i = 0; i < num_examples; ++i) {
+		setInput(inputData[i]);
+		ex.setElem(0, labels[i], 1.0);
+		
+		for (int stepInd = 0; stepInd < numIts; ++stepInd) {
+			resetState(); // doesn't overwrite input
+			forwardPropagate();
+			backwardPropagate(ex, 0.0, true, stepEpsilon, targeted);
+		}
+		Matrix<DTYPE> advExample(layers.getHead()->getElemPtr()->layerData);
+		advExample.dumpToUbyte(outputData[i]);
+		ex.setElem(0, labels[i], 0.0);
+		if (verbose) {
+			printf("\rGenerating Adversarial Examples %3.2f Percent Complete \t", 100.0 * ((float)i) / ((float)num_examples));
+		}
+	}
+	printf("\n Saving Adversarial Examples\n");
+	write_mnist_images(name, num_examples, img_rows, img_cols, outputData);
+	std::cout << "Images Saved to " << name << std::endl;
+	printf("Deallocating Adversarial Output\n");
+	for (unsigned int i = 0; i < num_examples; ++i) {
+		delete[] outputData[i];
+	}
+	delete[] outputData;
+	printf("Adversarial Output deallocated\n");
+}
+
+Matrix<float> PhaseMagNetCUDA::predict(const unsigned int num_examples, uchar** inputData, bool verbose) {
 	assert(initialized);
 	MatrixDim mdim(num_examples, layers.getTail()->getElem().layParams.matDim.cdim, sizeof(float)); // hardcode float here
 	Matrix<DTYPE> predictions(mdim);
-	for (size_t i = 0; i < num_examples; ++i) {
+	for (unsigned int i = 0; i < num_examples; ++i) {
 		setInput(inputData[i]);
 		forwardPropagate();
-		Matrix<DTYPE>& output = getOutput();
-		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
+		Matrix<DTYPE> output(getOutput());
+		for (unsigned int j = 0; j < predictions.mdim.cdim; ++j) {
 			predictions.setElem(i, j, output.data[j]);
 		}
 #ifdef PRINT_OUTPUT
 		printf("Output:\t");
-		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
+		for (unsigned int j = 0; j < predictions.mdim.cdim; ++j) {
 			printf("%3.3f\t", output.data[j]);
 		}
 		printf("\n");
@@ -157,14 +202,14 @@ Matrix<float> PhaseMagNetCUDA::predict(const size_t num_examples, uchar** inputD
 	return predictions;
 }
 
-float PhaseMagNetCUDA::evaluate(const size_t num_examples, uchar** inputData, uchar* labels, bool verbose) {
+float PhaseMagNetCUDA::evaluate(const unsigned int num_examples, uchar** inputData, uchar* labels, bool verbose) {
 	assert(initialized);
-	Matrix<float>& predictions = predict(num_examples, inputData, verbose);
-	size_t num_correct = 0;
-	for (size_t i = 0; i < num_examples; ++i) {
+	Matrix<float> predictions(predict(num_examples, inputData, verbose));
+	unsigned int num_correct = 0;
+	for (unsigned int i = 0; i < num_examples; ++i) {
 		float maxval = 0;
 		int maxind = 0;
-		for (size_t j = 0; j < predictions.mdim.cdim; ++j) {
+		for (unsigned int j = 0; j < predictions.mdim.cdim; ++j) {
 			float val = predictions.getElem(i, j);
 			if (val > maxval) {
 				maxind = j;
@@ -181,7 +226,7 @@ void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
 	Matrix<DTYPE> temp(layPtr->layerData.mdim);
 
-	for (size_t i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
+	for (unsigned int i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
 		DTYPE inp = (((DTYPE)(ucharptr[i])) / 255.0f);
 		temp.setElemFlatten(i, inp);
 	}
@@ -201,12 +246,12 @@ Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 #endif // PRINT_MAG
 	// iterate through output and calculate softmax
 	DTYPE agg = 0.0;
-	for (size_t i = 0; i < out.mdim.cdim; ++i) {
+	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
 		DTYPE expval = exp(out.getElem(0, i));
 		out.setElem(0, i, expval);
 		agg += expval;
 	}
-	for (size_t i = 0; i < out.mdim.cdim; ++i) {
+	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
 		out.setElem(0, i, out.getElem(0, i) / agg);
 	}
 	return out;
@@ -228,6 +273,10 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerData,
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias,
 					nextLayerPtr->layParams.convParams,	nextLayerPtr->layerData, nextLayerPtr->layerDataAng);
+				break;
+			case LayerType::conv:
+				cudaStatus = scalarConvolutionWithCuda(prevLayerPtr->layerData, nextLayerPtr->getWeightsPrevR(), nextLayerPtr->bias,
+					nextLayerPtr->layParams.convParams, nextLayerPtr->layerData, nextLayerPtr->layParams.actType);
 				break;
 			case LayerType::avgpool:
 				//printf("AVG_POOL\n");
@@ -277,7 +326,7 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 	layers.forEach(propagatefunc);
 }
 
-void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrnRate) {
+void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrnRate, bool adjInput, float eps, bool targeted) {
 	// calculate error at the outputs
 	auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
 	Matrix<DTYPE> err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
@@ -306,6 +355,11 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, 
 					nextLayerPtr->layerData, nextLayerPtr->layerDataAng, nextLayerPtr->errorData, lrnRate);
 				break;
+			case LayerType::conv:
+				cudaStatus = scalarConvolutionBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData,
+					nextLayerPtr->weightsPrevR, nextLayerPtr->bias, nextLayerPtr->layParams.convParams,
+					nextLayerPtr->layerData, nextLayerPtr->errorData, lrnRate, nextLayerPtr->layParams.actType);
+				break;
 			case LayerType::avgpool:
 				cudaStatus = scalarAvgPoolBackpropWithCuda(prevLayerPtr->errorData, nextLayerPtr->layParams.convParams, nextLayerPtr->layerData,
 					nextLayerPtr->errorData, nextLayerPtr->layParams.actType);
@@ -326,6 +380,11 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 	};
 	for (LinkedListNode<Layer>* ptr = layers.getTail(); ptr->hasPrev(); ptr = ptr->getPrev())
 		backpropagatefunc(ptr);
+	// cute trick: add error to input activation
+	if (adjInput) {
+		Layer* inpLayer = layers.getHead()->getElemPtr();
+		addSubAndClipWithCuda(inpLayer->layerData, inpLayer->errorData, inpLayer->layerData, eps, targeted);
+	}
 }
 
 void PhaseMagNetCUDA::resetState(void) {
@@ -385,7 +444,7 @@ Matrix<T> readMatrix(std::ifstream& is) {
 	is >> output;
 	assert(std::strcmp(output, "matrix") == 0);
 	Matrix<T> temp(readMatrixDim(is));
-	for (size_t i = 0; i < temp.mdim.getNumElems(); ++i) {
+	for (unsigned int i = 0; i < temp.mdim.getNumElems(); ++i) {
 		is >> temp.data[i];
 	}
 	return temp;
@@ -414,7 +473,7 @@ void writeLayer(std::ostream& os, const Layer* layptr) {
 	default: // has biases and weightsPrev
 		Matrix<DTYPE> tempBias(layptr->bias);
 		writeMatrix(os, tempBias);
-		for (int i = 0; i < layptr->layParams.convParams.numFilters; ++i) {
+		for (unsigned int i = 0; i < layptr->layParams.convParams.numFilters; ++i) {
 			Matrix<DTYPE> tempR((layptr->weightsPrevR)[i]);
 			Matrix<DTYPE> tempI((layptr->weightsPrevI)[i]);
 			writeMatrix(os, tempR);
@@ -444,7 +503,7 @@ Layer readLayer(std::ifstream& istrm) {
 		lay.bias.fillFromMatrix(readMatrix<DTYPE>(istrm));
 		lay.weightsPrevR = new CudaMatrix<DTYPE>[cP.numFilters];
 		lay.weightsPrevI = new CudaMatrix<DTYPE>[cP.numFilters];
-		for (int i = 0; i < cP.numFilters; ++i) {
+		for (unsigned int i = 0; i < cP.numFilters; ++i) {
 			lay.weightsPrevR[i] = CudaMatrix<DTYPE>(readMatrix<DTYPE>(istrm));
 			lay.weightsPrevI[i] = CudaMatrix<DTYPE>(readMatrix<DTYPE>(istrm)); // allocated and copied
 		}
@@ -475,9 +534,9 @@ void PhaseMagNetCUDA::load(const std::string& path) {
 	std::ifstream ifile(path, std::ios::in); // do not want to append to existing file. path should be to a new file
 	if (ifile.is_open()) {
 		// walk layers and save each layer
-		size_t num_layers;
+		unsigned int num_layers;
 		ifile >> num_layers;
-		for (size_t i = 0; i < num_layers; ++i) {
+		for (unsigned int i = 0; i < num_layers; ++i) {
 			layers.append(readLayer(ifile));
 		}
 		initialize(true);

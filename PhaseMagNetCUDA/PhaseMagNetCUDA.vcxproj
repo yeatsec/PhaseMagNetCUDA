@@ -80,13 +80,14 @@
     <CudaCompile Include="cudafuncs.cu" />
     <CudaCompile Include="main.cu" />
     <CudaCompile Include="PhaseMagNetCUDA.cu" />
+    <CudaCompile Include="read_dataset.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cudafuncs.cuh" />
     <ClInclude Include="LinkedList.cuh" />
     <ClInclude Include="PhaseMagNetCUDA.cuh" />
     <ClInclude Include="pmncudautils.cuh" />
-    <ClInclude Include="readdataset.cuh" />
+    <ClInclude Include="read_dataset.cuh" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="notes.txt" />

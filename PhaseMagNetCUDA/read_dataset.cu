@@ -1,17 +1,12 @@
 
 
-#ifndef READDATASET_CUH
-#define READDATASET_CUH
-
-// https://stackoverflow.com/questions/8286668/how-to-read-mnist-data-in-c
-
 
 #include <fstream>
 #include <iostream>
 #include <vector>
 #include <string>
+#include "read_dataset.cuh"
 
-typedef unsigned char uchar;
 
 uchar** read_mnist_images(std::string full_path, int& number_of_images, int& image_size) {
     auto reverseInt = [](int i) {
@@ -48,8 +43,44 @@ uchar** read_mnist_images(std::string full_path, int& number_of_images, int& ima
     }
 }
 
+// msb is c4, lsb is c1
+void makeReverseInt(int i, uchar& c1, uchar& c2, uchar& c3, uchar& c4) {
+    c1 = i & 255, c2 = (i >> 8) & 255, c3 = (i >> 16) & 255, c4 = (i >> 24) & 255;
+}
 
-uchar * const read_mnist_labels(std::string full_path, int& number_of_labels) {
+void writeReverseInt(std::ofstream& os, int i) {
+    uchar c1, c2, c3, c4;
+    makeReverseInt(i, c1, c2, c3, c4);
+    os.write((char*)&c1, 1);
+    os.write((char*)&c2, 1);
+    os.write((char*)&c3, 1);
+    os.write((char*)&c4, 1); // written in reverse, msbyte is last
+}
+
+void write_mnist_images(std::string full_path, int number_of_images, int image_rows, int image_cols, uchar** data) {
+    std::ofstream file(full_path, std::ios::binary);
+
+    if (file.is_open()) {
+        int magic_number = 2051;
+        writeReverseInt(file, magic_number);
+        // do same for number of images
+        writeReverseInt(file, number_of_images);
+        writeReverseInt(file, image_rows);
+        writeReverseInt(file, image_cols);
+        int image_size = image_rows * image_cols;
+        for (int i = 0; i < number_of_images; i++) {
+            file.write((char*)data[i], image_size);
+        }
+        file.close();
+    }
+    else {
+        throw std::runtime_error("Cannot open file `" + full_path + "`!");
+    }
+
+}
+
+
+uchar* const read_mnist_labels(std::string full_path, int& number_of_labels) {
     auto reverseInt = [](int i) {
         unsigned char c1, c2, c3, c4;
         c1 = i & 255, c2 = (i >> 8) & 255, c3 = (i >> 16) & 255, c4 = (i >> 24) & 255;
@@ -87,6 +118,3 @@ void printimage(uchar* image, size_t rows, size_t cols) {
         printf("\n");
     }
 }
-
-
-#endif // READDATASET_CUH

@@ -5,6 +5,7 @@
 #include "pmncudautils.cuh"
 #include "cuda_runtime.h"
 
+cudaError_t addSubAndClipWithCuda(const CudaMatrix<DTYPE>& d_A, const CudaMatrix<DTYPE>& d_B, CudaMatrix<DTYPE>& d_C, float eps, bool add, DTYPE clipMin = 0.0f, DTYPE clipMax = 1.0f);
 
 cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value);
 
@@ -17,6 +18,11 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
     CudaMatrix<DTYPE>& d_prevError,  CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams,
     const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE> d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate);
 
+cudaError_t scalarConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMatrix<DTYPE>* d_conv, const CudaMatrix<DTYPE>& d_convBias,
+    const ConvParams& convParams, CudaMatrix<DTYPE>& d_nextAct, ActivationType actType);
+
+cudaError_t scalarConvolutionBackpropWithCuda(CudaMatrix<DTYPE>& d_prevAct, CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_conv, CudaMatrix<DTYPE>& d_convBias,
+    const ConvParams& convParams, const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextError, float lrnRate, ActivationType actType);
 
 cudaError_t scalarFCForwardPropWithCuda(const CudaMatrix<DTYPE>& d_opVec, const CudaMatrix<DTYPE>& d_opMat, const CudaMatrix<DTYPE>& d_bias, CudaMatrix<DTYPE>& d_resVec, ActivationType actType);
 

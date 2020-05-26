@@ -10,9 +10,9 @@
 #include "pmncudautils.cuh"
 #include "cudafuncs.cuh"
 #include "PhaseMagNetCUDA.cuh"
-#include "readdataset.cuh"
+#include "read_dataset.cuh"
 
-void buildNetwork(PhaseMagNetCUDA& net) {
+void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     /* Input Layer */
     MatrixDim in_mdim(28, 28, sizeof(DTYPE), 1);
     LayerParams input(LayerType::input, ActivationType::relu, in_mdim);
@@ -25,7 +25,7 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     conv1.stride = 1; // conv only supports stride of 1
     conv1.numFilters = 6;
     MatrixDim convMdim(conv1.getNextActDim(in_mdim, sizeof(DTYPE)));
-    LayerParams convLayer(LayerType::phasorconv, ActivationType::relu, convMdim, conv1);
+    LayerParams convLayer(LayerType::conv, ActivationType::relu, convMdim, conv1);
     net.addLayer(convLayer);
     printf("Conv1 Created\n");
     /* Average Pooling */
@@ -46,8 +46,8 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     conv2.pad = 0;
     conv2.numFilters = 16;
     conv2.stride = 1; // conv only supports stride of 1
-    //MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
-    //LayerParams convLayer2(LayerType::phasorconv, ActivationType::relu, convMdim2, conv2);
+    MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
+    LayerParams convLayer2(LayerType::phasorconv, ActivationType::relu, convMdim2, conv2);
     //net.addLayer(convLayer2);
     printf("Conv2 Layer Created\n");
     /* Average Pooling 2 */
@@ -57,8 +57,8 @@ void buildNetwork(PhaseMagNetCUDA& net) {
     avgPoolParams2.pad = 0;
     avgPoolParams2.stride = 2;
     avgPoolParams2.numFilters = 16;
-    //MatrixDim avgPoolMdim2(avgPoolParams2.getNextActDim(convMdim2, sizeof(DTYPE)));
-    //LayerParams avgPoolLayer2(LayerType::avgpool, ActivationType::relu, avgPoolMdim2, avgPoolParams2);
+    MatrixDim avgPoolMdim2(avgPoolParams2.getNextActDim(convMdim2, sizeof(DTYPE)));
+    LayerParams avgPoolLayer2(LayerType::avgpool, ActivationType::relu, avgPoolMdim2, avgPoolParams2);
     //net.addLayer(avgPoolLayer2);
     printf("AvgPool 2 Created\n");
     /* FC 1 */
@@ -81,10 +81,19 @@ int main()
     int n_ims_train = 50000;
     int n_ims_test = 10000;
     int image_size = 784;
+    /* Network File / Test Set file changes */
     PhaseMagNetCUDA net;
-    //buildNetwork(net);
-    net.load("autosave0.txt");
-    char* testName = "..\\..\\..\\..\\mnist\\ann_a_advclp_0.2eps-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
+    
+    char* model_name = "lenet5_relu_chkpt4.txt";
+    char* model_savename = "lenet5_relu_chkpt5.txt";
+
+    //buildNetworkLenet5(net);
+    std::cout << "Loading: " << model_name << std::endl;
+    net.load(model_name);
+    std::cout << "Will Save as: " << model_savename << std::endl;
+    char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
+
+
     printf("Loading Data...\n");
     printf("Test Set: %s \n", testName);
     uchar** imdata = read_mnist_images("..\\..\\..\\..\\mnist\\train-images.idx3-ubyte", n_ims_train, image_size);
@@ -93,8 +102,8 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    float lrnRate = 0.001f;
-    for (int i = 1; i <= 5; ++i) {
+    float lrnRate = 0.0002f;
+    for (int i = 1; i <= 3; ++i) {
         printf("Epoch: %d\n", i);
         float acc = net.evaluate(/*n_ims_test*/ 10000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
@@ -103,7 +112,8 @@ int main()
         net.save("autosave0.txt");
         net.save("autosave1.txt");
     }
-    net.save(".\\lenet5_phasorconv1.txt");
+    std::cout << "Saving network file to " << model_savename << std::endl;
+    net.save(model_savename);
     net.free();
     // printf("index: %d %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f %4.2f true: %d\n", i,  o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7], o[8], o[9], ladata[i]);
 
