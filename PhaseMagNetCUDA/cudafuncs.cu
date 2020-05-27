@@ -79,15 +79,23 @@ __device__ scalarActFunc p_softmaxDerivFunc = softmaxDerivFunc;
 __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE errMag, DTYPE errAng, DTYPE& dLdMag, DTYPE& dLdPhi) {
 	DTYPE abswx = d_abs2(wxr, wxi);
 	DTYPE absY = d_abs2(Yr, Yi);
+	DTYPE Y_wxr = Yr - wxr;
+	DTYPE Y_wxi = Yi - wxi;
+	DTYPE absY_wx = d_abs2(Y_wxr, Y_wxi);
 	if (abswx > 0 && absY > 0) {
-		DTYPE Y_wxr = Yr - wxr;
-		DTYPE Y_wxi = Yi - wxi;
-		dLdPhi = (((Y_wxi * wxr) - (Y_wxr * wxi)) / absY); // magnitude of dLdPhi
+		// rotate wx by complex conjugate of Y_wx (used to determine sign of gradient in dmag/dang or dang/dmag cases)
+		if (absY_wx > 0) {
+			DTYPE invRotwxr, invRotwxi;
+			d_cmp_mult(wxr, wxi, Y_wxr, -1.0f * Y_wxi, invRotwxr, invRotwxi);
+			DTYPE absInvRotwx = d_abs2(invRotwxr, invRotwxi);
+			//DTYPE gamma = acosf(((wxr * Y_wxr) + (wxi * Y_wxi)) / (abswx * absY_wx));
+			dLdPhi = ((abswx * absY_wx * ((-invRotwxi) / absInvRotwx)) / absY) * errMag; // sign of invRotwxi is equal to dGamma/dang(wx)
+			//dLdPhi = copysignf(dLdPhi, invRotwxi); // sign of dLdPhi, with error
+		}
+		else { // magnitude does not change wrt angle if there are no other phasors to add
+			dLdPhi = 0;
+		}
 		dLdMag = ((abswx + (Y_wxr * (wxr / abswx)) + (Y_wxi * (wxi / abswx))) / absY) * errMag;
-		// rotate wx by complex conjugate of Y (used to determine sign of gradient in dmag/dang or dang/dmag cases)
-		DTYPE invRotwxr, invRotwxi;
-		d_cmp_mult(wxr, wxi, Yr, -1.0f * Yi, invRotwxr, invRotwxi);
-		dLdPhi = copysignf(dLdPhi, -1.0f * invRotwxi) * errMag; // sign of dLdPhi, with error; come back to this about copysignf usage
 		
 		//// gradient clipping here
 		if (abs(dLdMag) > GRADIENT_CLIP) {

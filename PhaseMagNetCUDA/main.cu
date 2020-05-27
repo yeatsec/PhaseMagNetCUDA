@@ -25,7 +25,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv1.stride = 1; // conv only supports stride of 1
     conv1.numFilters = 6;
     MatrixDim convMdim(conv1.getNextActDim(in_mdim, sizeof(DTYPE)));
-    LayerParams convLayer(LayerType::conv, ActivationType::relu, convMdim, conv1);
+    LayerParams convLayer(LayerType::phasorconv, ActivationType::relu, convMdim, conv1);
     net.addLayer(convLayer);
     printf("Conv1 Created\n");
     /* Average Pooling */
@@ -48,7 +48,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv2.stride = 1; // conv only supports stride of 1
     MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
     LayerParams convLayer2(LayerType::phasorconv, ActivationType::relu, convMdim2, conv2);
-    //net.addLayer(convLayer2);
+    net.addLayer(convLayer2);
     printf("Conv2 Layer Created\n");
     /* Average Pooling 2 */
     ConvParams avgPoolParams2;
@@ -59,7 +59,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     avgPoolParams2.numFilters = 16;
     MatrixDim avgPoolMdim2(avgPoolParams2.getNextActDim(convMdim2, sizeof(DTYPE)));
     LayerParams avgPoolLayer2(LayerType::avgpool, ActivationType::relu, avgPoolMdim2, avgPoolParams2);
-    //net.addLayer(avgPoolLayer2);
+    net.addLayer(avgPoolLayer2);
     printf("AvgPool 2 Created\n");
     /* FC 1 */
     MatrixDim mid1_mdim(1, 120, sizeof(DTYPE));
@@ -84,12 +84,12 @@ int main()
     /* Network File / Test Set file changes */
     PhaseMagNetCUDA net;
     
-    char* model_name = "lenet5_relu_chkpt5.txt";
-    char* model_savename = "lenet5_relu_chkpt6.txt";
+    char* model_name = "lenet5_phasor_chkpt0.txt";
+    char* model_savename = "lenet5_phasor_chkpt1.txt";
 
-    //buildNetworkLenet5(net);
-    std::cout << "Loading: " << model_name << std::endl;
-    net.load(model_name);
+    buildNetworkLenet5(net);
+    /*std::cout << "Loading: " << model_name << std::endl;
+    net.load(model_name);*/
     std::cout << "Will Save as: " << model_savename << std::endl;
     char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
 
@@ -102,14 +102,14 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    net.genAdv("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", 10000, 28, 28, imdata_test, ladata_test, 0.20, 10, /* targeted */ false, /* verbose */ true);
-    int n_ims_adv, adv_ims_size;
-    uchar** adv_set = read_mnist_images("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", n_ims_adv, adv_ims_size);
-    float acc = net.evaluate(/*n_ims_test*/ n_ims_adv, adv_set, ladata_test, /* verbose */ true);
-    printf("Acc: %4.2f \n", acc * 100.0);
+    //net.genAdv("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", 10000, 28, 28, imdata_test, ladata_test, 0.20, 10, /* targeted */ false, /* verbose */ true);
+    //int n_ims_adv, adv_ims_size;
+    //uchar** adv_set = read_mnist_images("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", n_ims_adv, adv_ims_size);
+    //float acc = net.evaluate(/*n_ims_test*/ n_ims_adv, adv_set, ladata_test, /* verbose */ true);
+    //printf("Acc: %4.2f \n", acc * 100.0);
 
 
-    float lrnRate = 0.0002f;
+    float lrnRate = 0.001f;
     for (int i = 1; i <= 3; ++i) {
         printf("Epoch: %d\n", i);
         float acc = net.evaluate(/*n_ims_test*/ 10000, imdata_test, ladata_test, /* verbose */ true);
