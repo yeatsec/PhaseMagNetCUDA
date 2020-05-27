@@ -3,19 +3,21 @@ TODO List / Reminders
 
 	seed 1234567
 
-	removed scaling of convbackprop by receptive field size
-
 	lenet5_phasorconv2: no L2 regularization, 5-6 epochs lrnRate 0.001. clean acc: 97.68
-
-	lenet5conv2_0: 2 convolutional layers, activation of first avgPool is ReLU. UNBOUNDED
-
 	lenet5_relu_chkpt: 2 phasorconv layers, activation is ReLU. 94.09 acc with more to go
+
+	write abstract
+	implement max pool / dropout
+	read/write Cifar10
+	create VGG-style network
+
+	generate FGSM examples for the MNIST networks
 
 
 
 Results: 
 lenet5_relu_chkpt3
-lenet5
+lenet5_scalar_chkpt3
 Adversarial:						Error:
 	0.0eps (clean):
 		PhasorConv: 96.63%				3.37%

@@ -84,8 +84,8 @@ int main()
     /* Network File / Test Set file changes */
     PhaseMagNetCUDA net;
     
-    char* model_name = "lenet5_relu_chkpt4.txt";
-    char* model_savename = "lenet5_relu_chkpt5.txt";
+    char* model_name = "lenet5_relu_chkpt5.txt";
+    char* model_savename = "lenet5_relu_chkpt6.txt";
 
     //buildNetworkLenet5(net);
     std::cout << "Loading: " << model_name << std::endl;
@@ -101,6 +101,13 @@ int main()
     uchar** imdata_test = read_mnist_images(testName, n_ims_test, image_size); 
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
+
+    net.genAdv("lenet5_relu_chkpt5_fgsm_eps0.50.idx3-ubyte", 100, 28, 28, imdata_test, ladata_test, 0.50, 10, /* targeted */ false, /* verbose */ true);
+    int n_ims_adv, adv_ims_size;
+    uchar** adv_set = read_mnist_images("lenet5_relu_chkpt5_fgsm_eps0.50.idx3-ubyte", n_ims_adv, adv_ims_size);
+    float acc = net.evaluate(/*n_ims_test*/ n_ims_adv, adv_set, ladata_test, /* verbose */ true);
+    printf("Acc: %4.2f \n", acc * 100.0);
+
 
     float lrnRate = 0.0002f;
     for (int i = 1; i <= 3; ++i) {

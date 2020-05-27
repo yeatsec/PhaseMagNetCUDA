@@ -4,7 +4,9 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 #include "cudafuncs.cuh"
+#include <curand_kernel.h>
 #include <assert.h>
+#include <math.h>
 
 constexpr auto ALPHA = 0.00f;
 constexpr auto GRADIENT_CLIP = 1.0f;
@@ -465,7 +467,7 @@ __global__ void updateKernelBias(const CudaMatrixArg<DTYPE> d_nextError, CudaMat
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams,
-	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE> d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
+	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
 	// check that the dimensions fit
 	assert(d_prevAct.mdim == d_prevError.mdim); // prev parallel
 	assert(d_nextError.mdim == d_nextAct.mdim);
@@ -893,9 +895,10 @@ cudaError_t scalarFCForwardPropWithCuda(const CudaMatrix<DTYPE>& d_opVec, const 
 	return cudaStatus;
 }
 
-__global__ void scalarAvgPoolKernel(const int actMap, const CudaMatrixArg<DTYPE> d_prevAct, ConvParams convParams, CudaMatrixArg<DTYPE> d_nextAct, scalarActFunc actFunc) {
+__global__ void scalarAvgPoolKernel(const CudaMatrixArg<DTYPE> d_prevAct, ConvParams convParams, CudaMatrixArg<DTYPE> d_nextAct, scalarActFunc actFunc) {
 	int nextRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
 	int nextColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	const int actMap = blockIdx.z;
 	if (nextRowInd < d_nextAct.mdim.rdim && nextColInd < d_nextAct.mdim.cdim) {
 		int prevRowInd = nextRowInd * convParams.stride;
 		int prevColInd = nextColInd * convParams.stride;
@@ -938,7 +941,7 @@ cudaError_t scalarAvgPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const Conv
 	
 	// tile up nextAct and average over d_prevAct receptive field
 
-	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE, 1);
 
 	unsigned int numRowIts = d_nextAct.mdim.rdim / BLOCK_SIZE;
 	if (numRowIts * BLOCK_SIZE < d_nextAct.mdim.rdim)
@@ -947,15 +950,109 @@ cudaError_t scalarAvgPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const Conv
 	if (numColIts * BLOCK_SIZE < d_nextAct.mdim.cdim)
 		++numColIts;
 
-	dim3 gridDim(numColIts, numRowIts); // x, y
-	for (unsigned int actMap = 0; actMap < d_prevAct.mdim.adim; ++actMap)
-		scalarAvgPoolKernel <<< gridDim, blockDim >>> (actMap, d_prevAct.getCudaMatrixArg(), convParams, d_nextAct.getCudaMatrixArg(), actFunc);
+	dim3 gridDim(numColIts, numRowIts, d_prevAct.mdim.adim); // x, y
+	scalarAvgPoolKernel <<< gridDim, blockDim >>> (d_prevAct.getCudaMatrixArg(), convParams, d_nextAct.getCudaMatrixArg(), actFunc);
 
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "scalarAvgPoolKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
 	}
 
+	return cudaStatus;
+}
+
+__global__ void scalarMaxPoolKernel(const CudaMatrixArg<DTYPE> d_prevAct, ConvParams convParams, CudaMatrixArg<DTYPE> d_nextAct, scalarActFunc actFunc, curandState* curandptr, float dropout = 0.0f) {
+	float prn = 1.0f;
+	int nextRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	int nextColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	const int actMap = blockIdx.z;
+	if (nextRowInd < d_nextAct.mdim.rdim && nextColInd < d_nextAct.mdim.cdim) {
+		if (dropout > 0.0f) {
+			prn = curand_uniform(&curandptr[getInd(d_nextAct.mdim, nextRowInd, nextColInd, actMap)]);
+		}
+		int prevRowInd = nextRowInd * convParams.stride;
+		int prevColInd = nextColInd * convParams.stride;
+		DTYPE max = 0;
+		if (prn >= dropout) {
+			for (int f_row = 0; f_row < convParams.stride; ++f_row) {
+				for (int f_col = 0; f_col < convParams.stride; ++f_col) {
+					DTYPE val = getElem(d_prevAct, prevRowInd + f_row, prevColInd + f_col, actMap);
+					if (val > max) {
+						max = val;
+					}
+				}
+			}
+		}
+		max = actFunc(max);
+		setElem(d_nextAct, nextRowInd, nextColInd, max, actMap);
+	}
+}
+
+cudaError_t scalarMaxPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const ConvParams& convParams, CudaMatrix<DTYPE>& d_nextAct, ActivationType actType, curandState* curandptr, float dropout) {
+	assert(d_prevAct.mdim.adim == d_nextAct.mdim.adim);
+	assert(d_prevAct.mdim.rdim / convParams.stride == d_nextAct.mdim.rdim && d_prevAct.mdim.cdim / convParams.stride == d_nextAct.mdim.cdim);
+	assert(dropout >= 0.0f && dropout <= 1.0f);
+	assert(actType == ActivationType::relu || dropout == 0.0f); // backpropagation will not work correctly with dropout otherwise
+
+	scalarActFunc actFunc;
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_sigmoidFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol relu failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// tile up nextAct and average over d_prevAct receptive field
+
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE, 1);
+
+	unsigned int numRowIts = d_nextAct.mdim.rdim / BLOCK_SIZE;
+	if (numRowIts * BLOCK_SIZE < d_nextAct.mdim.rdim)
+		++numRowIts;
+	unsigned int numColIts = d_nextAct.mdim.cdim / BLOCK_SIZE;
+	if (numColIts * BLOCK_SIZE < d_nextAct.mdim.cdim)
+		++numColIts;
+	dim3 gridDim(numColIts, numRowIts, d_prevAct.mdim.adim); // x, y, z
+
+
+	scalarMaxPoolKernel <<< gridDim, blockDim >>> (d_prevAct.getCudaMatrixArg(), convParams, d_nextAct.getCudaMatrixArg(), actFunc, curandptr, dropout);
+
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		printf("scalarMaxpool error %s \n", cudaGetErrorString(cudaStatus));
+	}
+	return cudaStatus;
+}
+
+__global__ void setupRNGKernel(curandState* state, MatrixDim mdim, unsigned long long seed) {
+	int idx = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (idx < getNumElems(mdim)) {
+		curand_init(seed, idx, 0, &(state[idx]));
+	}
+}
+
+cudaError_t setupRNGWithCuda(const MatrixDim& mdim, curandState* state, unsigned long long seed) {
+	int numIts = mdim.getNumElems() / VEC_SIZE;
+	if (numIts * VEC_SIZE < mdim.getNumElems()) {
+		++numIts;
+	}
+	setupRNGKernel <<< numIts, VEC_SIZE >>> (state, mdim, seed);
+	cudaError_t cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		printf("setupRNGWithCuda failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
 	return cudaStatus;
 }
 
@@ -1081,7 +1178,7 @@ __global__ void scalarAvgPoolBackpropKernel(const int actMap, CudaMatrixArg<DTYP
 }
 
 cudaError_t scalarAvgPoolBackpropWithCuda(CudaMatrix<DTYPE>& d_prevError, const ConvParams& convParams, 
-	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE> d_nextError, ActivationType actType) {
+	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextError, ActivationType actType) {
 
 	assert(d_prevError.mdim.adim == d_nextAct.mdim.adim);
 	assert(d_nextAct.mdim == d_nextError.mdim);
@@ -1121,6 +1218,74 @@ cudaError_t scalarAvgPoolBackpropWithCuda(CudaMatrix<DTYPE>& d_prevError, const 
 	dim3 gridDim(numColIts, numRowIts); // x, y
 	for (unsigned int actMap = 0; actMap < d_prevError.mdim.adim; ++actMap) {
 		scalarAvgPoolBackpropKernel <<< gridDim, blockDim >>> (actMap, d_prevError.getCudaMatrixArg(), convParams,
+			d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
+	}
+
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarAvgPoolKernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	return cudaStatus;
+}
+
+__global__ void scalarMaxPoolBackpropKernel(const int actMap, CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE> d_prevError, ConvParams convParams,
+	CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextError, scalarActFunc actDerivFunc) {
+	int prevRowInd = threadIdx.y + (blockIdx.y * blockDim.y);
+	int prevColInd = threadIdx.x + (blockIdx.x * blockDim.x);
+	int nextRowInd = prevRowInd / convParams.stride;
+	int nextColInd = prevColInd / convParams.stride;
+	if (prevRowInd < d_prevError.mdim.rdim && prevColInd < d_prevError.mdim.cdim && nextRowInd < d_nextAct.mdim.rdim && nextColInd < d_nextAct.mdim.cdim) {
+		DTYPE nextAct = getElem(d_nextAct, nextRowInd, nextColInd, actMap);
+		if (getElem(d_prevAct, prevRowInd, prevColInd, actMap) == nextAct) { // is max
+			DTYPE err = getElem(d_nextError, nextRowInd, nextColInd, actMap);
+			err *= actDerivFunc(nextAct); // dropout can make this zero and if it is relu, this is zero too
+			setElem(d_prevError, prevRowInd, prevColInd, err, actMap); // default is zero, so if this doesn't get set, it will be zero
+		}
+	}
+}
+
+cudaError_t scalarMaxPoolBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMatrix<DTYPE>& d_prevError, const ConvParams& convParams, const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextError,
+	ActivationType actType) {
+
+	assert(d_prevError.mdim.adim == d_nextAct.mdim.adim);
+	assert(d_nextAct.mdim == d_nextError.mdim);
+	assert(d_prevError.mdim.rdim / convParams.stride == d_nextAct.mdim.rdim && d_prevError.mdim.cdim / convParams.stride == d_nextAct.mdim.cdim);
+
+	scalarActFunc actDerivFunc;
+	cudaError_t cudaStatus;
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_sigmoidDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::softmax:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol relu failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	// tile up nextAct and average over d_prevAct receptive field
+
+	dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
+
+	unsigned int numRowIts = d_prevError.mdim.rdim / BLOCK_SIZE;
+	if (numRowIts * BLOCK_SIZE < d_prevError.mdim.rdim)
+		++numRowIts;
+	unsigned int numColIts = d_prevError.mdim.cdim / BLOCK_SIZE;
+	if (numColIts * BLOCK_SIZE < d_prevError.mdim.cdim)
+		++numColIts;
+
+	dim3 gridDim(numColIts, numRowIts); // x, y
+	for (unsigned int actMap = 0; actMap < d_prevError.mdim.adim; ++actMap) {
+		scalarMaxPoolBackpropKernel <<< gridDim, blockDim >>> (actMap, d_prevAct.getCudaMatrixArg(), d_prevError.getCudaMatrixArg(), convParams,
 			d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
 	}
 

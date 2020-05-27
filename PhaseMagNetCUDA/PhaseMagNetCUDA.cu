@@ -10,6 +10,8 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
+#define SEED 1234567
+
 // #define PRINT_WEIGHT
 // #define PRINT_ACT
 // #define PRINT_MAG
@@ -34,7 +36,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 	assert(!(initialized || layers.isEmpty()));
 	// do this to seed the random
 	// srand(static_cast <unsigned> (time(0)));
-	srand(1234567);
+	srand(SEED);
 	// iterate through the layers list and initialize weights
 	auto initfunc = [](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasPrev()) { // only do this for weight "owners"
@@ -44,7 +46,9 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			MatrixDim matDim;
 			unsigned int numSets = 1;
 			switch (elemPtr->layParams.layType) {
-			//case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
+			case LayerType::maxpool: // use convparams stride and filterDim, pad must be zero
+				elemPtr->initializeRNG(SEED); // initialize RNG in case of dropout, continue on
+				setupRNGWithCuda(elemPtr->layerData.mdim, elemPtr->layerRNG, SEED); // any error will be printed inside function
 			case LayerType::avgpool:
 			case LayerType::conv:
 			case LayerType::phasorconv: // ensure that the dimensions match up
@@ -109,7 +113,7 @@ void PhaseMagNetCUDA::addLayer(const LayerParams& lp) {
 	layers.append(lay);
 }
 
-void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose) {
+void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose, float dropout) {
 	assert(initialized);
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
 	ex.fill(0.0);
@@ -117,7 +121,7 @@ void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, 
 		ex.setElem(0, labels[i], 1.0);
 		setInput(inputData[i]);
 		resetState(); // doesn't overwrite input
-		forwardPropagate();
+		forwardPropagate(dropout);
 		backwardPropagate(ex, lrnRate);
 		//Matrix<DTYPE>& prmat = layers.getHead()->getNext()->getElem().errorData;
 		//printf("DEBUG %1.8f\n", prmat.getElemFlatten(200/*prmat.mdim.getNumElems()/2*/));
@@ -140,9 +144,10 @@ void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_exam
 	assert(numIts > 0);
 	std::cout << "Generating Adversarial Examples for File " << name << std::endl;
 	printf("Allocating Adversarial Output Size: %d Images %d ImageSize\n", num_examples, img_rows * img_cols);
+	const unsigned int img_size = img_rows * img_cols;
 	uchar** outputData = new uchar * [num_examples];
 	for (unsigned int i = 0; i < num_examples; ++i) {
-		outputData[i] = new uchar[img_rows * img_cols];
+		outputData[i] = new uchar[img_size];
 	}
 	printf("Output Allocated\n");
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
@@ -153,7 +158,7 @@ void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_exam
 		ex.setElem(0, labels[i], 1.0);
 		
 		for (int stepInd = 0; stepInd < numIts; ++stepInd) {
-			resetState(); // doesn't overwrite input
+			resetState(); // doesn't overwrite input activation, does overwrite input error to zero
 			forwardPropagate();
 			backwardPropagate(ex, 0.0, true, stepEpsilon, targeted);
 		}
@@ -257,10 +262,10 @@ Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	return out;
 }
 
-void PhaseMagNetCUDA::forwardPropagate(void) {
+void PhaseMagNetCUDA::forwardPropagate(float dropout) {
 	// walk Layer list and update layer state incrementally
 	// call matmul kernels in loop
-	auto propagatefunc = [](LinkedListNode<Layer>* ptr) {
+	auto propagatefunc = [dropout](LinkedListNode<Layer>* ptr) {
 		if (ptr->hasNext()) { // only propagate if not last layer
 			Layer* prevLayerPtr = ptr->getElemPtr();
 			Layer* nextLayerPtr = (ptr->getNext())->getElemPtr();
@@ -282,6 +287,10 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 				//printf("AVG_POOL\n");
 				cudaStatus = scalarAvgPoolWithCuda(prevLayerPtr->layerData,
 					nextLayerPtr->layParams.convParams, nextLayerPtr->layerData, nextLayerPtr->layParams.actType);
+				break;
+			case LayerType::maxpool:
+				cudaStatus = scalarMaxPoolWithCuda(prevLayerPtr->layerData, nextLayerPtr->layParams.convParams, nextLayerPtr->layerData,
+					nextLayerPtr->layParams.actType, nextLayerPtr->layerRNG, dropout);
 				break;
 			case LayerType::fc:
 				cudaStatus = scalarFCForwardPropWithCuda(prevLayerPtr->layerData,
@@ -315,15 +324,10 @@ void PhaseMagNetCUDA::forwardPropagate(void) {
 #endif // PRINT_ACT
 		}
 	};
-	// print the input
-	//Matrix<DTYPE> inpR(layers.getHead()->getElemPtr()->layerDataR);
-	//Matrix<DTYPE> inpI(layers.getHead()->getElemPtr()->layerDataI);
-	/*printf("Input\n");
-	for (int i = 0; i < inpR.mdim.getNumElems(); ++i) {
-		printf("Re(%5.5f) Im(%5.5f) ", inpR.data[i], inpI.data[i]);
-	}
-	printf("\n");*/
-	layers.forEach(propagatefunc);
+	// would do a forEach here but dropout needs to be in the sensitivity list of the lambda
+	for (LinkedListNode<Layer>* ptr = layers.getHead(); ptr->hasNext(); ptr = ptr->getNext()) // will end at tail
+		propagatefunc(ptr);
+	propagatefunc(layers.getTail()); // don't forget the tail
 }
 
 void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrnRate, bool adjInput, float eps, bool targeted) {
@@ -364,6 +368,10 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 				cudaStatus = scalarAvgPoolBackpropWithCuda(prevLayerPtr->errorData, nextLayerPtr->layParams.convParams, nextLayerPtr->layerData,
 					nextLayerPtr->errorData, nextLayerPtr->layParams.actType);
 				break;
+			case LayerType::maxpool:
+				cudaStatus = scalarMaxPoolBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData, nextLayerPtr->layParams.convParams,
+					nextLayerPtr->layerData, nextLayerPtr->errorData, nextLayerPtr->layParams.actType);
+				break;
 			case LayerType::fc:
 				cudaStatus = scalarFCBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData,
 					*(nextLayerPtr->weightsPrevR), nextLayerPtr->layerData, nextLayerPtr->errorData,
@@ -398,6 +406,7 @@ void PhaseMagNetCUDA::resetState(void) {
 		}
 	};
 	layers.forEach(resetfunc);
+	setValueWithCuda(layers.getHead()->getElemPtr()->errorData, 0);
 }
 
 // thanks - https://stackoverflow.com/questions/22899595/saving-a-2d-array-to-a-file-c/22899753#22899753
@@ -449,16 +458,6 @@ Matrix<T> readMatrix(std::ifstream& is) {
 	}
 	return temp;
 }
-//layparams
-//LayerType layType;
-//ActivationType actType;
-//MatrixDim matDim;
-
-//Matrix layerData
-//Matrix errorData
-//Matrix bias
-//Matrix* weightsPrev
-//Matrix* weightsNext
 
 void writeLayer(std::ostream& os, const Layer* layptr) {
 	MatrixDim mdim(layptr->layParams.matDim); // copy

@@ -1,12 +1,15 @@
 
+
 #ifndef PMNCUDAUTILS_CUH
 #define PMNCUDAUTILS_CUH
 
 #include <algorithm>
 #include <assert.h>
 #include <iostream>
+#include <curand_kernel.h>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+
 
 #define BLOCK_SIZE 16
 #define VEC_SIZE 32
@@ -299,6 +302,7 @@ struct Layer {
 	CudaMatrix<DTYPE> layerDataAng;
 	CudaMatrix<DTYPE> errorData;
 	CudaMatrix<DTYPE> bias;
+	curandState* layerRNG;
 	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsPrevI; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsNextR; // same as prev
@@ -309,6 +313,7 @@ struct Layer {
 		layerDataAng(lp.matDim),
 		errorData(lp.matDim),
 		bias(lp.matDim),
+		layerRNG(0),
 		weightsPrevR(nullptr),
 		weightsPrevI(nullptr),
 		weightsNextR(nullptr),
@@ -330,7 +335,19 @@ struct Layer {
 		weightsNextR(toCopy.weightsNextR),
 		weightsNextI(toCopy.weightsNextI)
 	{
-		
+		if (toCopy.layerRNG != 0) {
+			cudaError_t cudaStatus = cudaMalloc(&layerRNG, sizeof(curandState) * layerData.mdim.getNumElems());
+			if (cudaStatus != cudaSuccess) {
+				printf("layer curand allocate copyctor failed! %s\n", cudaGetErrorString(cudaStatus));
+			}
+			cudaStatus = cudaMemcpy(layerRNG, toCopy.layerRNG, sizeof(curandState) * layerData.mdim.getNumElems(), cudaMemcpyDeviceToDevice);
+			if (cudaStatus != cudaSuccess) {
+				printf("layer curand Memcpy copyctor failed! %s\n", cudaGetErrorString(cudaStatus));
+			}
+		}
+		else {
+			layerRNG = 0;
+		}
 	}
 	Layer& operator=(Layer other) {
 		if (&other != this) {
@@ -350,6 +367,7 @@ struct Layer {
 		// compiler will invoke dtor on individual matrices
 		// delete weightsPrev;
 		// weightsNext is not "owned" by this layer
+		cudaFree(layerRNG);
 		weightsPrevR = nullptr;
 		weightsPrevI = nullptr;
 		weightsNextR = nullptr;
@@ -360,6 +378,13 @@ struct Layer {
 		delete[] weightsPrevI;
 		weightsPrevR = nullptr;
 		weightsPrevI = nullptr;
+	}
+	void initializeRNG(unsigned long long seed) {
+		assert(layerRNG == 0); // no reassigning layerRNG
+		cudaError_t cudaStatus = cudaMalloc(&layerRNG, sizeof(curandState) * layerData.mdim.getNumElems());
+		if (cudaStatus != cudaSuccess) {
+			printf("layer curand allocate failed! %s\n", cudaGetErrorString(cudaStatus));
+		}
 	}
 	void initializeWeightsPrev(const MatrixDim& matDim, const size_t numSets = 1) {
 		if (numSets == 0)

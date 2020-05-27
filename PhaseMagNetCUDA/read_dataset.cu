@@ -51,10 +51,10 @@ void makeReverseInt(int i, uchar& c1, uchar& c2, uchar& c3, uchar& c4) {
 void writeReverseInt(std::ofstream& os, int i) {
     uchar c1, c2, c3, c4;
     makeReverseInt(i, c1, c2, c3, c4);
-    os.write((char*)&c1, 1);
-    os.write((char*)&c2, 1);
+    os.write((char*)&c4, 1);
     os.write((char*)&c3, 1);
-    os.write((char*)&c4, 1); // written in reverse, msbyte is last
+    os.write((char*)&c2, 1);
+    os.write((char*)&c1, 1);
 }
 
 void write_mnist_images(std::string full_path, int number_of_images, int image_rows, int image_cols, uchar** data) {
