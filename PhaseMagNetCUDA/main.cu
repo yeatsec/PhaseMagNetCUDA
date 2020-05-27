@@ -102,9 +102,9 @@ int main()
     uchar* ladata_test = read_mnist_labels("..\\..\\..\\..\\mnist\\t10k-labels.idx1-ubyte", n_ims_test);
     printf("Finished Loading Data.\n");
 
-    net.genAdv("lenet5_relu_chkpt5_fgsm_eps0.50.idx3-ubyte", 100, 28, 28, imdata_test, ladata_test, 0.50, 10, /* targeted */ false, /* verbose */ true);
+    net.genAdv("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", 10000, 28, 28, imdata_test, ladata_test, 0.20, 10, /* targeted */ false, /* verbose */ true);
     int n_ims_adv, adv_ims_size;
-    uchar** adv_set = read_mnist_images("lenet5_relu_chkpt5_fgsm_eps0.50.idx3-ubyte", n_ims_adv, adv_ims_size);
+    uchar** adv_set = read_mnist_images("lenet5_relu_chkpt5_fgsm_eps0.20_step10.idx3-ubyte", n_ims_adv, adv_ims_size);
     float acc = net.evaluate(/*n_ims_test*/ n_ims_adv, adv_set, ladata_test, /* verbose */ true);
     printf("Acc: %4.2f \n", acc * 100.0);
 
