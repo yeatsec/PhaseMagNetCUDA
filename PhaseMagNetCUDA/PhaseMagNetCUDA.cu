@@ -14,7 +14,7 @@
 
 // #define PRINT_WEIGHT
 // #define PRINT_ACT
-// #define PRINT_MAG
+#define PRINT_MAG
 // #define PRINT_ERROR
 // #define PRINT_OUTPUT
 
@@ -70,7 +70,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 				throw std::logic_error("Layer Type not implemented\n");
 			}
 			// currently hardcoded for fully connected
-			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set
+			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set, device CudaMatrixArg pointers allocated
 			printf("linked\n");
 			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
@@ -78,6 +78,10 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 	auto initfromfilefunc = [](LinkedListNode<Layer>* ptr) { // weights already allocated
 		if (ptr->hasPrev()) {
 			Layer* elemPtr = (ptr->getElemPtr()); // reference to this element
+			if (elemPtr->layParams.layType == LayerType::maxpool) { // prep for possible dropout
+				elemPtr->initializeRNG(SEED);
+				setupRNGWithCuda(elemPtr->layerData.mdim, elemPtr->layerRNG, SEED);
+			}
 			LinkedListNode<Layer>* prevNodePtr = ptr->getPrev();
 			Layer* prevPtr = prevNodePtr->getElemPtr();
 			printf("linked\n");
@@ -133,6 +137,13 @@ void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, 
 		if (isnan(output.getElem(0, 0))) {
 			printf("\nisNaN output\n");
 			throw std::runtime_error("output isNaN\n");
+		}
+		if (i % 1000 == 0) {
+			// sample activation
+			Matrix<DTYPE> sample(layers.getTail()->getPrev()->getElemPtr()->layerData);
+			for (int j = 0; j < sample.getNumElems(); ++j) {
+				assert(!isnan(sample.getElemFlatten(j)));
+			}
 		}
 	}
 	printf("\n");
@@ -230,11 +241,7 @@ float PhaseMagNetCUDA::evaluate(const unsigned int num_examples, uchar** inputDa
 void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
 	Matrix<DTYPE> temp(layPtr->layerData.mdim);
-
-	for (unsigned int i = 0; i < layPtr->layParams.matDim.getNumElems(); ++i) {
-		DTYPE inp = (((DTYPE)(ucharptr[i])) / 255.0f);
-		temp.setElemFlatten(i, inp);
-	}
+	temp.fillFromUbyte(ucharptr);
 	layPtr->layerData.fillFromMatrix(temp);
 }
 
@@ -301,6 +308,7 @@ void PhaseMagNetCUDA::forwardPropagate(float dropout) {
 				throw std::logic_error("Not yet implemented\n");
 				break;
 			}
+
 			if (cudaStatus != cudaSuccess) {
 				fprintf(stderr, "forward propagate with cuda failed! %d %s\n", cudaStatus, cudaGetErrorString(cudaStatus));
 				throw std::logic_error("Forward Propagate Failed\n");
@@ -451,6 +459,7 @@ template <typename T>
 Matrix<T> readMatrix(std::ifstream& is) {
 	char output[10];
 	is >> output;
+	printf("%s\n", output);
 	assert(std::strcmp(output, "matrix") == 0);
 	Matrix<T> temp(readMatrixDim(is));
 	for (unsigned int i = 0; i < temp.mdim.getNumElems(); ++i) {

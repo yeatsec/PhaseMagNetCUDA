@@ -43,6 +43,24 @@ uchar** read_mnist_images(std::string full_path, int& number_of_images, int& ima
     }
 }
 
+uchar** read_cifar10_images_labels(std::string full_path, int number_of_images, uchar** labels) {
+    std::ifstream file(full_path, std::ios::binary);
+
+    if (file.is_open()) {
+        (*labels) = new uchar [number_of_images];
+        uchar** _dataset = new uchar * [number_of_images];
+        for (int i = 0; i < number_of_images; i++) {
+            file >> (*labels)[i]; // class label
+            _dataset[i] = new uchar[CIFAR_SIZE];
+            file.read((char*)_dataset[i], CIFAR_SIZE); // read
+        }
+        return _dataset;
+    }
+    else {
+        throw std::runtime_error("Cannot open file `" + full_path + "`!");
+    }
+}
+
 // msb is c4, lsb is c1
 void makeReverseInt(int i, uchar& c1, uchar& c2, uchar& c3, uchar& c4) {
     c1 = i & 255, c2 = (i >> 8) & 255, c3 = (i >> 16) & 255, c4 = (i >> 24) & 255;

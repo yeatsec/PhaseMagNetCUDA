@@ -11,9 +11,6 @@
 #include "device_launch_parameters.h"
 
 
-#define BLOCK_SIZE 16
-#define VEC_SIZE 32
-
 // For weight initialization https://stackoverflow.com/questions/686353/random-float-number-generation
 
 
@@ -141,7 +138,7 @@ struct Matrix {
 	}
 	void fillFromUbyte(const uchar* const ucharptr) {
 		for (size_t i = 0; i < getNumElems(); ++i) {
-			data[i] = (DTYPE)(ucharptr[i]) / 255.0f;
+			data[i] = ((DTYPE)(ucharptr[i])) / 255.0f;
 		}
 	}
 	void dumpToUbyte(uchar* ucharptr) {
@@ -305,6 +302,10 @@ struct Layer {
 	curandState* layerRNG;
 	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsPrevI; // list of filters if conv
+	CudaMatrixArg<DTYPE>* d_cmasR;
+	CudaMatrixArg<DTYPE>* d_cmasI;
+	CudaMatrixArg<DTYPE>* h_cmasR;
+	CudaMatrixArg<DTYPE>* h_cmasI;
 	CudaMatrix<DTYPE>* weightsNextR; // same as prev
 	CudaMatrix<DTYPE>* weightsNextI;
 	Layer(const LayerParams& lp) :
@@ -399,12 +400,25 @@ struct Layer {
 			DTYPE denom, r1, sign;
 			if (numSets > 1) { // indicates convolution
 				denom = ((DTYPE)(matDim.getNumElems()));
-				for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
-					// random number generator to initialize weights
-					DTYPE ang = 2* PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
-					DTYPE mag = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
-					tempR.data[i] = mag * sqrtf(2.0f / denom) * cosf(ang);
-					tempI.data[i] = mag * sqrtf(2.0f / denom) * sinf(ang);
+				if (layParams.layType == LayerType::phasorconv) {
+					for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
+						// random number generator to initialize weights
+						DTYPE ang = 2 * PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						DTYPE mag = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						tempR.data[i] = mag * sqrtf(2.0f / denom) * cosf(ang);
+						tempI.data[i] = mag * sqrtf(2.0f / denom) * sinf(ang);
+					}
+				}
+				else {
+					for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
+						// random number generator to initialize weights
+						r1 = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						sign = (rand() > RAND_MAX / 2) ? 1.0f : -1.0f;
+						tempR.data[i] = sign * r1 * sqrtf(2.0f / denom);
+						sign = (rand() > RAND_MAX / 2) ? 1.0f : -1.0f;
+						r1 = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						tempI.data[i] = sign * r1 * sqrtf(2.0f / denom);
+					}
 				}
 			}
 			else { // indicates FC

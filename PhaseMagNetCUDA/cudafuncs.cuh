@@ -4,12 +4,16 @@
 #include "pmncudautils.cuh"
 #include "cuda_runtime.h"
 
+#define BLOCK_SIZE 8
+#define VEC_SIZE 32
+
 cudaError_t addSubAndClipWithCuda(const CudaMatrix<DTYPE>& d_A, const CudaMatrix<DTYPE>& d_B, CudaMatrix<DTYPE>& d_C, float eps, bool add, DTYPE clipMin = 0.0f, DTYPE clipMax = 1.0f);
 
 cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value);
 
 cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
-    CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI, const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams,
+    CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI,
+    const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams,
     CudaMatrix<DTYPE>& d_nextActR, CudaMatrix<DTYPE>& d_nextActAng);
 
 
