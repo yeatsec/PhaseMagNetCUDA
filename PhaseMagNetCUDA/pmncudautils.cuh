@@ -302,10 +302,6 @@ struct Layer {
 	curandState* layerRNG;
 	CudaMatrix<DTYPE>* weightsPrevR; // list of filters if conv
 	CudaMatrix<DTYPE>* weightsPrevI; // list of filters if conv
-	CudaMatrixArg<DTYPE>* d_cmasR;
-	CudaMatrixArg<DTYPE>* d_cmasI;
-	CudaMatrixArg<DTYPE>* h_cmasR;
-	CudaMatrixArg<DTYPE>* h_cmasI;
 	CudaMatrix<DTYPE>* weightsNextR; // same as prev
 	CudaMatrix<DTYPE>* weightsNextI;
 	Layer(const LayerParams& lp) :

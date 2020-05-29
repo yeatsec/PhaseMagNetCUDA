@@ -13,8 +13,8 @@
 #include "read_dataset.cuh"
 
 void buildNetworkLenet5(PhaseMagNetCUDA& net) {
-    LayerType convLayType(LayerType::conv);
-    LayerType poolLayType(LayerType::maxpool);
+    // LayerType convLayType(LayerType::conv);
+    LayerType poolLayType(LayerType::avgpool);
     /* Input Layer */
     MatrixDim in_mdim(28, 28, sizeof(DTYPE), 1);
     LayerParams input(LayerType::input, ActivationType::relu, in_mdim);
@@ -27,7 +27,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv1.stride = 1; // conv only supports stride of 1
     conv1.numFilters = 6;
     MatrixDim convMdim(conv1.getNextActDim(in_mdim, sizeof(DTYPE)));
-    LayerParams convLayer(convLayType, ActivationType::relu, convMdim, conv1);
+    LayerParams convLayer(LayerType::phasorconv, ActivationType::relu, convMdim, conv1);
     net.addLayer(convLayer);
     printf("Conv1 Created\n");
     /* Average Pooling */
@@ -49,7 +49,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv2.numFilters = 16;
     conv2.stride = 1; // conv only supports stride of 1
     MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
-    LayerParams convLayer2(convLayType, ActivationType::relu, convMdim2, conv2);
+    LayerParams convLayer2(LayerType::conv, ActivationType::relu, convMdim2, conv2);
     net.addLayer(convLayer2);
     printf("Conv2 Layer Created\n");
     /* Average Pooling 2 */
@@ -78,7 +78,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
      net.initialize();
 }
 
-void run_mnist() {
+void run_mnist(char* model_name, char* model_savename, bool buildNetwork, char* testName, float lrnRate, int numEpochs, float dropout) {
     printf("Running MNIST Model... \n");
     int n_ims_train = 50000;
     int n_ims_test = 10000;
@@ -86,16 +86,16 @@ void run_mnist() {
     /* Network File / Test Set file changes */
     PhaseMagNetCUDA net;
 
-    char* model_name = "lenet5_maxpool_drop_chkpt0.txt";
-    char* model_savename = "lenet5_maxpool_drop_chkpt0.txt";
-
-    //buildNetworkLenet5(net);
-    std::cout << "Loading: " << model_name << std::endl;
-    net.load(model_name);
+    if (buildNetwork) {
+        buildNetworkLenet5(net);
+    }
+    else {
+        std::cout << "Loading: " << model_name << std::endl;
+        net.load(model_name);
+    }
+   
     std::cout << "Will Save as: " << model_savename << std::endl;
-    char* testName = "..\\..\\..\\..\\mnist\\ann_a_advclp_0.2eps-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
-
-
+    
     printf("Loading Data...\n");
     printf("Test Set: %s \n", testName);
     uchar** imdata_train = read_mnist_images("..\\..\\..\\..\\mnist\\train-images.idx3-ubyte", n_ims_train, image_size);
@@ -111,14 +111,13 @@ void run_mnist() {
     //printf("Acc: %4.2f \n", acc * 100.0);
 
 
-    float lrnRate = 0.001f;
-    for (int i = 1; i <= 3; ++i) {
+    for (int i = 1; i <= numEpochs; ++i) {
         printf("Epoch: %d\n", i);
         float acc = net.evaluate(/*n_ims_test*/ 10000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
-        net.train(/* n_ims_train */ 50000, imdata_train, ladata_train, /* */ lrnRate, /* verbose */ true, 0.2f);
+        net.train(/* n_ims_train */ 50000, imdata_train, ladata_train, /* */ lrnRate, /* verbose */ true, dropout);
         printf("\n");
-        char buffer[100];
+        char buffer[300];
         int n = sprintf(buffer, "mnist_autosave_%s", model_name);
         net.save(buffer);
         net.save("mnist_autosave.txt");
@@ -128,16 +127,17 @@ void run_mnist() {
     net.free();
 }
 
-void buildNetworkVGG11(PhaseMagNetCUDA& net) {
-    LayerType convLayType(LayerType::conv);
+void buildNetworkVGG8(PhaseMagNetCUDA& net) {
+    //LayerType convLayType1(LayerType::conv);
+    //LayerType convLayType2(LayerType::phasorconv); // check where these are applied
     LayerType poolLayType(LayerType::maxpool);
     int nFconv1_1 = 32;
     int nFconv1_2 = 32;
-    int nFconv2_1 = 48;
-    int nFconv2_2 = 48;
-    int nFconv3_1 = 64;
-    int nFconv3_2 = 64;
-    int nfc = 128;
+    int nFconv2_1 = 64;
+    int nFconv2_2 = 64;
+    int nFconv3_1 = 128;
+    int nFconv3_2 = 128;
+    int nfc = 64;
     int nout = 10;
 
     /* Input Layer */
@@ -152,7 +152,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv1_1.stride = 1; // conv only supports stride of 1
     conv1_1.numFilters = nFconv1_1;
     MatrixDim convMdim1_1(conv1_1.getNextActDim(in_mdim, sizeof(DTYPE)));
-    LayerParams convLayer1_1(convLayType, ActivationType::relu, convMdim1_1, conv1_1);
+    LayerParams convLayer1_1(LayerType::phasorconv, ActivationType::relu, convMdim1_1, conv1_1);
     net.addLayer(convLayer1_1);
     printf("Conv1_1 Created\n");
     /* Conv1_2 */
@@ -163,7 +163,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv1_2.stride = 1;
     conv1_2.numFilters = nFconv1_2;
     MatrixDim convMdim1_2(conv1_2.getNextActDim(convMdim1_1, sizeof(DTYPE)));
-    LayerParams convLayer1_2(convLayType, ActivationType::relu, convMdim1_2, conv1_2);
+    LayerParams convLayer1_2(LayerType::phasorconv, ActivationType::relu, convMdim1_2, conv1_2);
     net.addLayer(convLayer1_2);
     printf("Conv1_2 Created\n");
     /* Max Pool 1 */
@@ -185,7 +185,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv2_1.stride = 1;
     conv2_1.numFilters = nFconv2_1;
     MatrixDim convMdim2_1(conv2_1.getNextActDim(maxpool1mdim, sizeof(DTYPE)));
-    LayerParams convLayer2_1(convLayType, ActivationType::relu, convMdim2_1, conv2_1);
+    LayerParams convLayer2_1(LayerType::phasorconv, ActivationType::relu, convMdim2_1, conv2_1);
     net.addLayer(convLayer2_1);
     printf("Conv2_1 Created\n");
     /* Conv 2_2 */
@@ -196,7 +196,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv2_2.stride = 1;
     conv2_2.numFilters = nFconv2_2;
     MatrixDim convMdim2_2(conv2_2.getNextActDim(convMdim2_1, sizeof(DTYPE)));
-    LayerParams convLayer2_2(convLayType, ActivationType::relu, convMdim2_2, conv2_2);
+    LayerParams convLayer2_2(LayerType::phasorconv, ActivationType::relu, convMdim2_2, conv2_2);
     net.addLayer(convLayer2_2);
     printf("Conv2_2 Created\n");
     /* Max Pool 2 */
@@ -218,7 +218,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv3_1.stride = 1;
     conv3_1.numFilters = nFconv3_1;
     MatrixDim convMdim3_1(conv3_1.getNextActDim(maxpool2mdim, sizeof(DTYPE)));
-    LayerParams convLayer3_1(convLayType, ActivationType::relu, convMdim3_1, conv3_1);
+    LayerParams convLayer3_1(LayerType::phasorconv, ActivationType::relu, convMdim3_1, conv3_1);
     net.addLayer(convLayer3_1);
     printf("Conv3_1 Created\n");
     /* Conv 3_2 */
@@ -229,7 +229,7 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     conv3_2.stride = 1;
     conv3_2.numFilters = nFconv3_2;
     MatrixDim convMdim3_2(conv3_2.getNextActDim(convMdim3_1, sizeof(DTYPE)));
-    LayerParams convLayer3_2(convLayType, ActivationType::relu, convMdim3_2, conv3_2);
+    LayerParams convLayer3_2(LayerType::phasorconv, ActivationType::relu, convMdim3_2, conv3_2);
     net.addLayer(convLayer3_2);
     printf("Conv3_2 Created\n");
     /* Max Pool 3 */
@@ -256,19 +256,20 @@ void buildNetworkVGG11(PhaseMagNetCUDA& net) {
     net.initialize();
 }
 
-void run_cifar() {
+void run_cifar(char* model_name, char* model_savename, bool buildNetwork, char* testName, float lrnRate, int numEpochs, float dropout) {
     printf("Running CIFAR10 Model... \n");
     PhaseMagNetCUDA net;
     
-    char* model_name = "vgg11_baseline_chkpt0.txt";
-    char* model_savename = "vgg11_baseline_chkpt0.txt";
     
-    buildNetworkVGG11(net);
-    /*std::cout << "Loading: " << model_name << std::endl;
-    net.load(model_name);*/
+    if (buildNetwork) {
+        buildNetworkVGG8(net);
+    }
+    else {
+        std::cout << "Loading: " << model_name << std::endl;
+        net.load(model_name);
+    }
+   
     std::cout << "Will Save as: " << model_savename << std::endl;
-
-    char* testName = "..\\..\\..\\..\\cifar10\\test_batch.bin"; 
 
     const int n_ims_train = 10000;
     const int n_ims_test = 10000;
@@ -288,19 +289,21 @@ void run_cifar() {
     uchar** imdata_test = read_cifar10_images_labels(testName, n_ims_test, &ladata_test);
     printf("Finished Loading Data.\n");
 
-
-    float lrnRate = 0.001f;
-    float dropout = 0.0f;
-    for (int i = 1; i <= 3; ++i) {
+    printf("Dropout: %2.3f\n", dropout);
+    for (int i = 1; i <= numEpochs; ++i) {
         printf("Epoch: %d\n", i);
-        float acc = net.evaluate(/*n_ims_test*/ 100, imdata_test, ladata_test, /* verbose */ true);
+        float acc = net.evaluate(/*n_ims_test*/ 1000, imdata_test, ladata_test, /* verbose */ true);
         printf("Acc: %4.2f \n", acc * 100.0);
         net.train(/* n_ims_train */ 10000, imdata_train1, ladata_train1, /* */ lrnRate, /* verbose */ true, dropout);
+        net.save("cifar_autosave.txt");
         net.train(/* n_ims_train */ 10000, imdata_train2, ladata_train2, /* */ lrnRate, /* verbose */ true, dropout);
         net.save("cifar_autosave.txt");
         net.train(/* n_ims_train */ 10000, imdata_train3, ladata_train3, /* */ lrnRate, /* verbose */ true, dropout);
+        net.save("cifar_autosave.txt");
         net.train(/* n_ims_train */ 10000, imdata_train4, ladata_train4, /* */ lrnRate, /* verbose */ true, dropout);
+        net.save("cifar_autosave.txt");
         net.train(/* n_ims_train */ 10000, imdata_train5, ladata_train5, /* */ lrnRate, /* verbose */ true, dropout);
+        net.save("cifar_autosave.txt");
         printf("\n");
         char buffer[300];
         int n = sprintf(buffer, "cifar_autosave_%s", model_name);
@@ -313,9 +316,29 @@ void run_cifar() {
 
 int main()
 {
+    bool mnist = false;
+    if (mnist)
+    {
+        char* modelName = "lenet5_mixed_chkpt0";
+        char* saveName = "lenet5_mixed_chkpt0";
+        bool build = false; // check buildLenet5 if true, check SEED
+        char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; //t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte
+        float lrnRate = 0.001f;
+        int numEpochs = 3;
+        float dropout = 0.0f;
+        run_mnist(modelName, saveName, build, testName, lrnRate, numEpochs, dropout);
+    }
+    else {
+        char* modelName = "VGG8_phasor_dropout_chkpt0.txt";
+        char* saveName = "VGG8_phasor_dropout_chkpt0.txt";
+        bool build = true; // check buildVGG8Network if true, check SEED
+        char* testName = "..\\..\\..\\..\\cifar10\\test_batch.bin"; //test_batch.bin
+        float lrnRate = 0.001f;
+        int numEpochs = 10;
+        float dropout = 0.15f;
 
-    //run_mnist();
-    run_cifar();
+        run_cifar(modelName, saveName, build, testName, lrnRate, numEpochs, dropout);
+    }
 
     // cudaDeviceReset must be called before exiting in order for profiling and
     // tracing tools such as Nsight and Visual Profiler to show complete traces.

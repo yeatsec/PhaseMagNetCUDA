@@ -10,11 +10,11 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
-#define SEED 1234567
+#define SEED 48954
 
 // #define PRINT_WEIGHT
 // #define PRINT_ACT
-#define PRINT_MAG
+// #define PRINT_MAG
 // #define PRINT_ERROR
 // #define PRINT_OUTPUT
 
@@ -69,7 +69,6 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			default:
 				throw std::logic_error("Layer Type not implemented\n");
 			}
-			// currently hardcoded for fully connected
 			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set, device CudaMatrixArg pointers allocated
 			printf("linked\n");
 			prevPtr->linkWeightsNext(elemPtr); // link ptr
@@ -127,8 +126,6 @@ void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, 
 		resetState(); // doesn't overwrite input
 		forwardPropagate(dropout);
 		backwardPropagate(ex, lrnRate);
-		//Matrix<DTYPE>& prmat = layers.getHead()->getNext()->getElem().errorData;
-		//printf("DEBUG %1.8f\n", prmat.getElemFlatten(200/*prmat.mdim.getNumElems()/2*/));
 		ex.setElem(0, labels[i], 0.0); // prep for next example
 		if (verbose) {
 			printf("Training Progress: %5.2f\t\r", 100.0 * ((float)i+1) / ((float)num_examples));
@@ -150,7 +147,7 @@ void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, 
 }
 
 
-void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_examples, const unsigned int img_rows, const unsigned int img_cols, uchar** inputData, uchar* labels, float epsilon, int numIts, bool targeted, bool verbose) {
+void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_examples, const unsigned int img_rows, const unsigned int img_cols, uchar** inputData, uchar* labels, float epsilon, int numIts, bool targeted, bool randomStart, bool verbose) {
 	assert(initialized);
 	assert(numIts > 0);
 	std::cout << "Generating Adversarial Examples for File " << name << std::endl;
@@ -164,8 +161,22 @@ void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_exam
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
 	ex.fill(0.0);
 	float stepEpsilon = epsilon / ((float)numIts);
+	if (randomStart) {
+		stepEpsilon /= 2.0f; // use alpha = 0.5eps
+	}
 	for (unsigned int i = 0; i < num_examples; ++i) {
-		setInput(inputData[i]);
+		if (randomStart) {
+			Matrix<DTYPE> h_inpLayAct(layers.getHead()->getElemPtr()->layParams.matDim);
+			h_inpLayAct.fillFromUbyte(inputData[i]); // bypass setInput
+			Matrix<DTYPE> noise(h_inpLayAct.mdim);
+			// add random uniform noise at half epsilon
+			noise.fillRandom((-epsilon) / 2.0f, epsilon / 2.0f);
+			h_inpLayAct.addMe(noise);
+			layers.getHead()->getElemPtr()->layerData.fillFromMatrix(h_inpLayAct);
+		}
+		else {
+			setInput(inputData[i]);
+		}
 		ex.setElem(0, labels[i], 1.0);
 		
 		for (int stepInd = 0; stepInd < numIts; ++stepInd) {
@@ -257,14 +268,22 @@ Matrix<DTYPE> PhaseMagNetCUDA::getOutput() const {
 	printf("\n");
 #endif // PRINT_MAG
 	// iterate through output and calculate softmax
+	// first get a good scaling constant
+	DTYPE shift = out.getElemFlatten(0);
+	// find maximum output
+	for (unsigned int i = 0; i < out.mdim.getNumElems(); ++i) {
+		DTYPE elem = out.getElemFlatten(i);
+		if (elem > shift)
+			shift = elem;
+	}
 	DTYPE agg = 0.0;
-	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
-		DTYPE expval = exp(out.getElem(0, i));
-		out.setElem(0, i, expval);
+	for (unsigned int i = 0; i < out.mdim.getNumElems(); ++i) {
+		DTYPE expval = exp(out.getElemFlatten(i) - shift);
+		out.setElemFlatten(i, expval);
 		agg += expval;
 	}
-	for (unsigned int i = 0; i < out.mdim.cdim; ++i) {
-		out.setElem(0, i, out.getElem(0, i) / agg);
+	for (unsigned int i = 0; i < out.mdim.getNumElems(); ++i) {
+		out.setElemFlatten(i, out.getElemFlatten(i) / agg);
 	}
 	return out;
 }
@@ -459,7 +478,6 @@ template <typename T>
 Matrix<T> readMatrix(std::ifstream& is) {
 	char output[10];
 	is >> output;
-	printf("%s\n", output);
 	assert(std::strcmp(output, "matrix") == 0);
 	Matrix<T> temp(readMatrixDim(is));
 	for (unsigned int i = 0; i < temp.mdim.getNumElems(); ++i) {

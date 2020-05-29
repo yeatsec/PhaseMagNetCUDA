@@ -50,7 +50,7 @@ uchar** read_cifar10_images_labels(std::string full_path, int number_of_images, 
         (*labels) = new uchar [number_of_images];
         uchar** _dataset = new uchar * [number_of_images];
         for (int i = 0; i < number_of_images; i++) {
-            file >> (*labels)[i]; // class label
+            file.read((char*)&((*labels)[i]), 1);
             _dataset[i] = new uchar[CIFAR_SIZE];
             file.read((char*)_dataset[i], CIFAR_SIZE); // read
         }

@@ -34,3 +34,35 @@ Adversarial:						Error:
 	0.2eps:
 		PhasorConv: 93.81%				6.19%
 		Conv: 47.51%					52.49%
+
+Procedure:
+	/* main.cu */
+	Check Network Name / Savename
+	Check Network Build / Load
+	Check network configuration (if applicable)
+	Check Train/Test set
+	Check lrnRate
+	Check epochs
+	Check dropout (if applicable)
+	/* cudafuncs.cu */
+	Check L2
+	/* PhaseMagNetCUDA.cu */
+	Check seed
+	
+
+
+Experiments:
+	MNIST
+	1234567	lenet5_relu_chkpt3: 2 phasorconvs with average pooling; no L2
+	1234567	lenet5_scalar_chkpt3: 2 convs with average pooling; no L2
+	216489  lenet5_mixed_ : 1 phasorconv 1 conv with average pooling no L2
+	lenet5_mixed_b: 1 conv 1 phasorconv; avgpool, no L2 yada yada
+
+	VGG8: 32 32 > 64 64 > 128 128 > FC(64) FC(10)
+	SEED | MODEL: desciption CIFAR10
+	1234567 VGG8_baseline: all conv + maxpool; no dropout; 0.001 L2
+	1564	VGG8_base_dropout: all conv + maxpool: dropout = 0.15; no L2
+	48954	VGG8_phasor: all phasorconv: no dropout; 0.001 L2
+	77789	VGG8_phasor_dropout: all phasorconv: dropout=0.15
+	15632	VGG8_mixed: 1st unit phasorconv, 2nd, 3rd units conv. dropout = 0.15
+	
