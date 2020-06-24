@@ -16,7 +16,7 @@
 
 #define PI 3.14159265f
 
-enum class LayerType { input, fc, conv, maxpool, avgpool, phasorconv};
+enum class LayerType { input, fc, conv, maxpool, avgpool, phasorconv, phasorconv2};
 enum class ActivationType { relu, sigmoid, softmax };
 
 
@@ -143,7 +143,7 @@ struct Matrix {
 	}
 	void dumpToUbyte(uchar* ucharptr) {
 		for (unsigned int i = 0; i < getNumElems(); ++i) {
-			ucharptr[i] = ((uchar)(data[i] * 255.0f));
+			ucharptr[i] = ((uchar)((unsigned int) (data[i] * 255.0f)));
 		}
 	}
 	void fillRandom(T minval, T maxval) {
@@ -399,8 +399,8 @@ struct Layer {
 				if (layParams.layType == LayerType::phasorconv) {
 					for (unsigned int i = 0; i < matDim.getNumElems(); ++i) {
 						// random number generator to initialize weights
-						DTYPE ang = 2 * PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
-						DTYPE mag = ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						DTYPE ang = 2.0f * PI * ((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
+						DTYPE mag = 1.0f;//((static_cast <DTYPE> (rand())) / (static_cast<DTYPE> (RAND_MAX)));
 						tempR.data[i] = mag * sqrtf(2.0f / denom) * cosf(ang);
 						tempI.data[i] = mag * sqrtf(2.0f / denom) * sinf(ang);
 					}

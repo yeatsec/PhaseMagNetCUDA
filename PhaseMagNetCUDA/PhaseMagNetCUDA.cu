@@ -10,9 +10,9 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
-#define SEED 48954
+#define SEED 74894
 
-// #define PRINT_WEIGHT
+#define PRINT_WEIGHT
 // #define PRINT_ACT
 // #define PRINT_MAG
 // #define PRINT_ERROR
@@ -52,6 +52,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			case LayerType::avgpool:
 			case LayerType::conv:
 			case LayerType::phasorconv: // ensure that the dimensions match up
+			case LayerType::phasorconv2:
 				// expect that the dimensions for both the conv filters and activation maps are set
 				assert(elemPtr->layParams.convParams.getNextActDim(prevPtr->layParams.matDim, 
 					sizeof(DTYPE)) == elemPtr->layParams.matDim);
@@ -188,7 +189,7 @@ void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_exam
 		advExample.dumpToUbyte(outputData[i]);
 		ex.setElem(0, labels[i], 0.0);
 		if (verbose) {
-			printf("\rGenerating Adversarial Examples %3.2f Percent Complete \t", 100.0 * ((float)i) / ((float)num_examples));
+			printf("\rGenerating Adversarial Examples %3.2f Percent Complete \t", 100.0 * ((float)(i+1)) / ((float)num_examples));
 		}
 	}
 	printf("\n Saving Adversarial Examples\n");
@@ -300,10 +301,11 @@ void PhaseMagNetCUDA::forwardPropagate(float dropout) {
 			
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::phasorconv:
+			case LayerType::phasorconv2:
 				//printf("CONV\n");
 				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerData,
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias,
-					nextLayerPtr->layParams.convParams,	nextLayerPtr->layerData, nextLayerPtr->layerDataAng);
+					nextLayerPtr->layParams.convParams, nextLayerPtr->layParams.layType, nextLayerPtr->layerData, nextLayerPtr->layerDataAng);
 				break;
 			case LayerType::conv:
 				cudaStatus = scalarConvolutionWithCuda(prevLayerPtr->layerData, nextLayerPtr->getWeightsPrevR(), nextLayerPtr->bias,
@@ -382,8 +384,9 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 			
 			switch (nextLayerPtr->layParams.layType) {
 			case LayerType::phasorconv:
+			case LayerType::phasorconv2:
 				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData, 
-					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, 
+					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, nextLayerPtr->layParams.layType,
 					nextLayerPtr->layerData, nextLayerPtr->layerDataAng, nextLayerPtr->errorData, lrnRate);
 				break;
 			case LayerType::conv:

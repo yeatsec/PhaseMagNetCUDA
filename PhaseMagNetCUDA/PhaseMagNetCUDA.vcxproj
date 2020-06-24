@@ -91,6 +91,7 @@
   </ItemGroup>
   <ItemGroup>
     <Text Include="notes.txt" />
+    <Text Include="results.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

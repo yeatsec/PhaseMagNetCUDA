@@ -53,10 +53,23 @@ Procedure:
 
 Experiments:
 	MNIST
-	1234567	lenet5_relu_chkpt3: 2 phasorconvs with average pooling; no L2
-	1234567	lenet5_scalar_chkpt3: 2 convs with average pooling; no L2
+	1234567	lenet5_relu_chkpt4: 2 phasorconvs with average pooling; no L2 clean acc: 97.31
+	1234567	lenet5_scalar_chkpt5: 2 convs with average pooling; no L2: clean acc: 97.98
+	45687	lenet5_scalarb_chkpt0: 2 convs with average pooling; no L2
 	216489  lenet5_mixed_ : 1 phasorconv 1 conv with average pooling no L2
 	lenet5_mixed_b: 1 conv 1 phasorconv; avgpool, no L2 yada yada
+	1564	lenet5_phasor2
+	14849	lenet5_scalar2
+	74894	lenet5_phasor3 
+	
+	FASHION MNIST
+	777 fashion_scalar0_chkpt0: lenet5 arch
+	1564 fashion_mixed0_chkpt0: lenet5 phasorconv first
+	48974 fashion_phasor0_chkpt0: lenet5 phasorconv all 
+			0.0		0.1		0.2		0.3
+	scalar0	85.35	84.67	68.45	47.90
+	mixed0	85.49	77.59	62.47	38.91
+	phasor0	86.42	75.30	48.96	27.98
 
 	VGG8: 32 32 > 64 64 > 128 128 > FC(64) FC(10)
 	SEED | MODEL: desciption CIFAR10
@@ -64,5 +77,53 @@ Experiments:
 	1564	VGG8_base_dropout: all conv + maxpool: dropout = 0.15; no L2
 	48954	VGG8_phasor: all phasorconv: no dropout; 0.001 L2
 	77789	VGG8_phasor_dropout: all phasorconv: dropout=0.15
-	15632	VGG8_mixed: 1st unit phasorconv, 2nd, 3rd units conv. dropout = 0.15
-	
+	15632	VGG8_mixed: 1st unit phasorconv, 2nd, 3rd units conv. dropout = 0.15 clean acc: 75.30; adv acc: 
+	7.10, 33.40, 46.80, 53.20, 60.30, 64.40, 67.10, 67.70, 69.90, 72.00
+	32 32 48 48 96 96 FC(64) FC(10)
+	pc pc c pc c c avgpool
+	48972	VGG8_mixed2: no dropout, use L2 = 0.001
+	10.70 37.0 46.0 49.0 52.90 56.30 59.00 59.60 62.30 64.30
+	19847   VGG8_mixed3
+	15978	VGG8_mixed4
+
+
+	Simple ANN Transfer Tests
+	lenet5_scalar_chkpt5:		97.98	96.93	95.34	92.13	87.15	79.66	67.80	58.71	49.01
+	lenet5_scalarb_chkpt1:		96.87	95.82	94.47	92.41	90.14	87.34	82.63	77.19	70.30
+	lenet5_scalarc_chkpt3		
+	lenet5_relu_chkpt4:			97.31	97.37	97.17	96.85	96.69	96.25	95.66	95.04	93.94
+	lenet5_mixed_chkpt0:		97.40	97.22	96.98	96.63	96.16	95.69	94.87	94.06	92.67
+
+	FGSM eps=0.2				1		2				3		4
+	lenet5_scalar_chkpt5:		06.66	69.89			75.46	78.73
+	lenet5_scalarb_chkpt1:		26.91	75.07			86.30	85.89
+	lenet5_relu_chkpt4:			88.54	91.87			90.78	86.68
+	lenet5_mixed_chkpt1:		88.75	93.23			92.72	76.92
+
+	FGSM eps=0.3
+97.57 lenet5_scalar_chkpt4:		01.75	
+96.87	lenet5_scalarb_chkpt1:			50.79	
+97.31	lenet5_relu_chkpt4:		67.97	77.51	76.69	61.35
+97.40	lenet5_mixed_chkpt1:							57.85
+
+Generating adversarial examples for relu_chkpt4 eps0.3 step20
+own: 69.52%
+
+Cifar10 transfer results
+
+Adv examples from VGG_nonorm(a)
+Epsilon:		0		1		2		4		8		16
+VGG8_mixed:		
+VGG8_mixed2
+VGG8_mixed3
+
+noise test
+eps				0.0		0.100		0.200		0.300
+relu_chkpt5:	97.52	97.54		97.35		97.14
+scalarc_chkpt3:	97.48	97.39		97.00		96.45
+scalar_chkpt5:	97.98	97.62		96.54		93.50
+
+CIFAR PHASOR
+
+Epsilon			0		1		2		4		8		16
+VGG8_phasor_c1	59.21					57.28	55.17	48.82

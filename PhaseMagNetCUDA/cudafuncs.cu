@@ -8,7 +8,8 @@
 #include <assert.h>
 #include <math.h>
 
-constexpr auto ALPHA = 0.000f;
+constexpr auto ALPHA = 0.001f;
+constexpr auto PC_ALPHA = 0.001f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
@@ -21,8 +22,12 @@ __device__ void d_cmp_mult(DTYPE ar, DTYPE ai, DTYPE br, DTYPE bi, DTYPE& cr, DT
 	ci = (ar * bi) + (br * ai);
 }
 
+__device__ DTYPE d_abs2_2(DTYPE r, DTYPE i) {
+	return (r * r) + (i * i);
+}
+
 __device__ DTYPE d_abs2(DTYPE r, DTYPE i) {
-	return sqrt((r * r) + (i * i));
+	return sqrt(d_abs2_2(r, i));
 }
 
 __device__ DTYPE d_ang2(const DTYPE r, const DTYPE i) { // -> [-pi, pi]
@@ -96,19 +101,23 @@ __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYP
 			dLdPhi = 0;
 		}
 		dLdMag = ((abswx + (Y_wxr * (wxr / abswx)) + (Y_wxi * (wxi / abswx))) / absY) * errMag;
-		
-		//// gradient clipping here
-		if (abs(dLdMag) > GRADIENT_CLIP) {
-			dLdMag = copysignf(GRADIENT_CLIP, dLdMag);
-		}
-		if (abs(dLdPhi) > GRADIENT_CLIP) {
-			dLdPhi = copysignf(GRADIENT_CLIP, dLdPhi);
-		}
 	}
 	else { // ReLU-like discontinuity at zero activation
 		dLdMag = 0;
 		dLdPhi = 0;
 	}
+}
+
+__device__ void get_dLdMag_dLdPhi2(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE errMag, DTYPE errAng, DTYPE& dLdMag, DTYPE& dLdPhi) {
+	DTYPE abswx = d_abs2(wxr, wxi);
+	DTYPE Y_wxr = Yr - wxr;
+	DTYPE Y_wxi = Yi - wxi;
+	DTYPE absY_wx = d_abs2(Y_wxr, Y_wxi);
+	dLdMag = 2.0f * (abswx + (wxr / abswx) * Y_wxr + (wxi / abswx) * Y_wxi) * errMag;
+	DTYPE invRotwxr, invRotwxi;
+	d_cmp_mult(wxr, wxi, Y_wxr, -1.0f * Y_wxi, invRotwxr, invRotwxi);
+	DTYPE absInvRotwx = d_abs2(invRotwxr, invRotwxi);
+	dLdPhi = 2.0f * (abswx * absY_wx * ((-invRotwxi) / absInvRotwx)) * errAng;
 }
 
 __device__ void scalarAdjustWeight(DTYPE& wgt, const DTYPE inp, const DTYPE err, const DTYPE lrnRate) {
@@ -195,7 +204,7 @@ cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value) {
 }
 
 __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE>* d_convR, 
-	CudaMatrixArg<DTYPE>* d_convI, const CudaMatrixArg<DTYPE> d_bias, const ConvParams convParams, CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng) {
+	CudaMatrixArg<DTYPE>* d_convI, const CudaMatrixArg<DTYPE> d_bias, const ConvParams convParams, const LayerType layType, CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng) {
 	extern __shared__ DTYPE s[];
 	const int filterNum = blockIdx.z;
 	const int sharedInputDim = blockDim.x; // == 20 x 20 == 400
@@ -265,7 +274,13 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, C
 			}
 		}
 		// calculate the magnitude with bias and pass through activation function
-		DTYPE dotValMag = d_abs2(dotValR, dotValI) + getElemFlatten(d_bias, filterNum);
+		DTYPE dotValMag = getElemFlatten(d_bias, filterNum);
+		if (layType == LayerType::phasorconv) { // no thread divergence possible here
+			dotValMag += d_abs2(dotValR, dotValI);
+		}
+		else {
+			dotValMag += d_abs2_2(dotValR, dotValI); // no sqrt
+		}
 		DTYPE dotValAng = d_ang2(dotValR, dotValI);
 		setElem(d_nextAct, ownNextActRow, ownNextActCol, dotValMag, filterNum);
 		setElem(d_nextActAng, ownNextActRow, ownNextActCol, dotValAng, filterNum);
@@ -274,7 +289,7 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, C
 
 cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI,
-	const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams,
+	const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams, const LayerType layType,
 	CudaMatrix<DTYPE>& d_nextAct, CudaMatrix<DTYPE>& d_nextActAng) {
 	assert(d_convR[0].mdim == d_convI[0].mdim);
 	assert(d_convR[0].mdim.adim == d_prevAct.mdim.adim);
@@ -311,7 +326,7 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	// filter is shared memory
 	// subset of input is shared memory
 	complexConvolutionKernel <<< gridDim, bDim, sharedSize >>> (d_prevAct.getCudaMatrixArg(),
-		d_cmasR, d_cmasI, d_convBias.getCudaMatrixArg(), convParams,
+		d_cmasR, d_cmasI, d_convBias.getCudaMatrixArg(), convParams, layType,
 		d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg());
 
 	cudaStatus = cudaGetLastError();
@@ -331,7 +346,7 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 
 __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE> d_prevError,
 	CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI, CudaMatrixArg<DTYPE> d_bias,
-	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const int actMap, const ConvParams convParams,
+	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const int actMap, const ConvParams convParams, const LayerType layType,
 	CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng, CudaMatrixArg<DTYPE> d_nextError) {
 	extern __shared__ DTYPE s[];
 	DTYPE* wgtR_s = s;
@@ -386,7 +401,12 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMa
 					DTYPE wxr, wxi;
 					d_cmp_mult(xR, xI, wgtR, wgtI, wxr, wxi);
 					DTYPE dLdMag, dLdPhi;
-					get_dLdMag_dLdPhi(YR, YI, wxr, wxi, errMag, errAng, dLdMag, dLdPhi);
+					if (layType == LayerType::phasorconv) { // no thread divergence possible here
+						get_dLdMag_dLdPhi(YR, YI, wxr, wxi, errMag, errAng, dLdMag, dLdPhi);
+					}
+					else {
+						get_dLdMag_dLdPhi2(YR, YI, wxr, wxi, errMag, errAng, dLdMag, dLdPhi);
+					}
 					eAngPrev += dLdPhi;
 					atomicAdd(&(wgtErrMag_s[getInd(d_filterErrMag.mdim, fRow, fCol, prevAisleInd)]), dLdMag);
 					atomicAdd(&(wgtErrPhi_s[getInd(d_filterErrPhi.mdim, fRow, fCol, prevAisleInd)]), dLdPhi);
@@ -405,7 +425,7 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMa
 }
 
 __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI,
-	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const float lrnRate) {
+	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const float lrnRate, const LayerType layType) {
 	const int kRow = threadIdx.y + (blockIdx.y * blockDim.y);
 	const int kCol = threadIdx.x + (blockIdx.x * blockDim.x);
 	const int kAisle = threadIdx.z + (blockIdx.z * blockDim.z);
@@ -420,8 +440,9 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 		// CHANGE - scale magnitude change by current magnitude
 		DTYPE absw = d_abs2(wR, wI);
 		if (absw > 0.0f) {
-			wR += ((eMag - ALPHA * absw) * (wR / absw)) * lrnRate;
-			wI += ((eMag - ALPHA * absw) * (wI / absw)) * lrnRate;
+			DTYPE reg = (layType == LayerType::phasorconv) ? PC_ALPHA * absw : PC_ALPHA * absw * absw;
+			wR += ((eMag - reg) * (wR / absw)) * lrnRate;
+			wI += ((eMag - reg) * (wI / absw)) * lrnRate;
 			// rotate weights by dPhi
 			d_cmp_mult(wR, wI, ePhiR, ePhiI, wR, wI);
 			// write back
@@ -452,7 +473,7 @@ __global__ void updateKernelBias(const CudaMatrixArg<DTYPE> d_nextError, CudaMat
 }
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
-	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams,
+	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams, const LayerType layType,
 	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
 	// check that the dimensions fit
 	assert(d_prevAct.mdim == d_prevError.mdim); // prev parallel
@@ -482,7 +503,7 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 		complexConvBackpropKernel <<< numLinearBlocks, linearBlock, sharedSize >>>
 			(d_prevAct.getCudaMatrixArg(), d_prevError.getCudaMatrixArg(), 
 				d_weightsR[actMap].getCudaMatrixArg(), d_weightsI[actMap].getCudaMatrixArg(), d_bias.getCudaMatrixArg(),
-				d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), actMap, convParams, 
+				d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), actMap, convParams, layType,
 				d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg(), 
 				d_nextError.getCudaMatrixArg());
 
@@ -499,7 +520,7 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 		MatrixDim fDim(convParams.filterDim);
 		// filter error needs to be reincorporated into weights
 		complexUpdateKernelWeights <<< dim3(1, 1, fDim.adim), dim3(fDim.cdim, fDim.rdim, 1) >>> (d_weightsR[actMap].getCudaMatrixArg(),
-			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate);
+			d_weightsI[actMap].getCudaMatrixArg(), d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), lrnRate, layType);
 		
 		cudaStatus = cudaGetLastError();
 
