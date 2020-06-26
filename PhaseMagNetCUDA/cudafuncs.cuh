@@ -13,13 +13,13 @@ cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value);
 
 cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
     CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI,
-    const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams, const LayerType layType,
-    CudaMatrix<DTYPE>& d_nextActR, CudaMatrix<DTYPE>& d_nextActAng);
+    const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams, const LayerType layType, const ActivationType actType,
+    CudaMatrix<DTYPE>& d_nextActR, CudaMatrix<DTYPE>& d_nextActMag, CudaMatrix<DTYPE>& d_nextActAng);
 
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
-    CudaMatrix<DTYPE>& d_prevError,  CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams, const LayerType layType,
-    const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate);
+    CudaMatrix<DTYPE>& d_prevError,  CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams, const LayerType layType, const ActivationType actType,
+    const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActMag, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate);
 
 cudaError_t scalarConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMatrix<DTYPE>* d_conv, const CudaMatrix<DTYPE>& d_convBias,
     const ConvParams& convParams, CudaMatrix<DTYPE>& d_nextAct, ActivationType actType);

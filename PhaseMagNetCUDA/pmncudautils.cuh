@@ -17,7 +17,7 @@
 #define PI 3.14159265f
 
 enum class LayerType { input, fc, conv, maxpool, avgpool, phasorconv, phasorconv2};
-enum class ActivationType { relu, sigmoid, softmax };
+enum class ActivationType { relu, sigmoid, linear };
 
 
 typedef float DTYPE; // data type for neural activation and weights
@@ -296,6 +296,7 @@ struct LayerParams {
 struct Layer {
 	LayerParams layParams;
 	CudaMatrix<DTYPE> layerData; // default to n-vector, (1, N)
+	CudaMatrix<DTYPE> layerDataMag;
 	CudaMatrix<DTYPE> layerDataAng;
 	CudaMatrix<DTYPE> errorData;
 	CudaMatrix<DTYPE> bias;
@@ -307,6 +308,7 @@ struct Layer {
 	Layer(const LayerParams& lp) :
 		layParams(lp),
 		layerData(lp.matDim),
+		layerDataMag(lp.matDim),
 		layerDataAng(lp.matDim),
 		errorData(lp.matDim),
 		bias(lp.matDim),
@@ -324,6 +326,7 @@ struct Layer {
 	Layer(const Layer& toCopy) :
 		layParams(toCopy.layParams),
 		layerData(toCopy.layerData),
+		layerDataMag(toCopy.layerDataMag),
 		layerDataAng(toCopy.layerDataAng),
 		errorData(toCopy.errorData),
 		bias(toCopy.bias),
@@ -350,6 +353,7 @@ struct Layer {
 		if (&other != this) {
 			std::swap(layParams, other.layParams);
 			std::swap(layerData, other.layerData);
+			std::swap(layerDataMag, other.layerDataMag);
 			std::swap(layerDataAng, other.layerDataAng);
 			std::swap(errorData, other.errorData);
 			std::swap(bias, other.bias);

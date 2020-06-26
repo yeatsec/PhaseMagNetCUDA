@@ -19,7 +19,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     LayerType poolLayType(LayerType::avgpool);
     /* Input Layer */
     MatrixDim in_mdim(28, 28, sizeof(DTYPE), 1);
-    LayerParams input(LayerType::input, ActivationType::softmax, in_mdim); // should be linear in case of adversarial example generation
+    LayerParams input(LayerType::input, ActivationType::linear, in_mdim); // should be linear in case of adversarial example generation
     net.addLayer(input);
     /* Conv1 */
     ConvParams conv1;
@@ -29,7 +29,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv1.stride = 1; // conv only supports stride of 1
     conv1.numFilters = numConv1Filters;
     MatrixDim convMdim(conv1.getNextActDim(in_mdim, sizeof(DTYPE)));
-    LayerParams convLayer(LayerType::conv, ActivationType::relu, convMdim, conv1);
+    LayerParams convLayer(LayerType::phasorconv, ActivationType::relu, convMdim, conv1);
     net.addLayer(convLayer);
     printf("Conv1 Created\n");
     /* Average Pooling */
@@ -51,7 +51,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     conv2.numFilters = numConv2Filters;
     conv2.stride = 1; // conv only supports stride of 1
     MatrixDim convMdim2(conv2.getNextActDim(avgPoolMdim, sizeof(DTYPE)));
-    LayerParams convLayer2(LayerType::conv, ActivationType::relu, convMdim2, conv2);
+    LayerParams convLayer2(LayerType::phasorconv, ActivationType::relu, convMdim2, conv2);
     net.addLayer(convLayer2);
     printf("Conv2 Layer Created\n");
     /* Average Pooling 2 */
@@ -75,7 +75,7 @@ void buildNetworkLenet5(PhaseMagNetCUDA& net) {
     net.addLayer(mid2);
     /* FC 2 >>> OUTPUT <<< */
     MatrixDim out_mdim(1, 10, sizeof(DTYPE));
-    LayerParams output(LayerType::fc, ActivationType::softmax, out_mdim);
+    LayerParams output(LayerType::fc, ActivationType::linear, out_mdim);
      net.addLayer(output);
      net.initialize();
 }
@@ -150,7 +150,7 @@ void buildNetworkVGG8(PhaseMagNetCUDA& net) {
 
     /* Input Layer */
     MatrixDim in_mdim(CIFAR_DIM, CIFAR_DIM, sizeof(DTYPE), CIFAR_CHAN);
-    LayerParams input(LayerType::input, ActivationType::softmax, in_mdim);
+    LayerParams input(LayerType::input, ActivationType::linear, in_mdim);
     net.addLayer(input);
     /* Conv1_1 */
     ConvParams conv1_1;
@@ -258,7 +258,7 @@ void buildNetworkVGG8(PhaseMagNetCUDA& net) {
     printf("FC 1 Created\n");
     /* Output */
     MatrixDim fc2_mdim(1, nout, sizeof(DTYPE));
-    LayerParams fc2(LayerType::fc, ActivationType::softmax, fc2_mdim);
+    LayerParams fc2(LayerType::fc, ActivationType::linear, fc2_mdim);
     net.addLayer(fc2);
     printf("Output Created\n");
     net.initialize();
@@ -327,11 +327,11 @@ int main()
     bool mnist = true;
     if (mnist)
     {
-        char* modelName = "lenet5_phasor2_chkpt0.txt";
-        char* saveName = "lenet5_phasor2_chkpt1.txt";
+        char* modelName = "lenet5_phasor3b_chkpt0.txt";
+        char* saveName = "lenet5_phasor3b_chkpt1.txt";
         bool build = false; // check buildLenet5 if true, check SEED
         //char* testName = "..\\..\\..\\..\\fashion-mnist\\data\\fashion\\fmnist_net0.pth_eps0.040.idx3-ubyte"; // t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte // lowfreq_eps0.200_mnist_test_images.idx3-ubyte
-        char* testName = "..\\..\\..\\..\\mnist\\ann_a_advclp_0.2eps-ubyte"; // mnist_net1.pth_eps0.100.idx3-ubyte
+        char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; // mnist_net1.pth_eps0.100.idx3-ubyte
         //char* testName = "fmnist_scalar0_chkpt0_fgsm_eps0.1_step1.idx3-ubyte";
         float lrnRate = 0.0002f;
         int numEpochs = 5;

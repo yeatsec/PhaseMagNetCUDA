@@ -305,7 +305,8 @@ void PhaseMagNetCUDA::forwardPropagate(float dropout) {
 				//printf("CONV\n");
 				cudaStatus = complexConvolutionWithCuda(prevLayerPtr->layerData,
 					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias,
-					nextLayerPtr->layParams.convParams, nextLayerPtr->layParams.layType, nextLayerPtr->layerData, nextLayerPtr->layerDataAng);
+					nextLayerPtr->layParams.convParams, nextLayerPtr->layParams.layType, nextLayerPtr->layParams.actType,
+					nextLayerPtr->layerData, nextLayerPtr->layerDataMag, nextLayerPtr->layerDataAng);
 				break;
 			case LayerType::conv:
 				cudaStatus = scalarConvolutionWithCuda(prevLayerPtr->layerData, nextLayerPtr->getWeightsPrevR(), nextLayerPtr->bias,
@@ -386,8 +387,9 @@ void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrn
 			case LayerType::phasorconv:
 			case LayerType::phasorconv2:
 				cudaStatus = complexConvBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData, 
-					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, nextLayerPtr->layParams.layType,
-					nextLayerPtr->layerData, nextLayerPtr->layerDataAng, nextLayerPtr->errorData, lrnRate);
+					nextLayerPtr->weightsPrevR, nextLayerPtr->weightsPrevI, nextLayerPtr->bias, nextLayerPtr->layParams.convParams, 
+					nextLayerPtr->layParams.layType, nextLayerPtr->layParams.actType,
+					nextLayerPtr->layerData, nextLayerPtr->layerDataMag, nextLayerPtr->layerDataAng, nextLayerPtr->errorData, lrnRate);
 				break;
 			case LayerType::conv:
 				cudaStatus = scalarConvolutionBackpropWithCuda(prevLayerPtr->layerData, prevLayerPtr->errorData,

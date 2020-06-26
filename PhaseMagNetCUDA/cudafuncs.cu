@@ -64,11 +64,11 @@ __device__ DTYPE sigmoidDerivFunc(DTYPE act) {
 }
 
 /* Softmax + softmaxderiv funcs are just placeholders; the work is done by the processor */
-__device__ DTYPE softmaxFunc(DTYPE act) {
+__device__ DTYPE linearFunc(DTYPE act) {
 	return act;
 }
 
-__device__ DTYPE softmaxDerivFunc(DTYPE act) {
+__device__ DTYPE linearDerivFunc(DTYPE act) {
 	return 1.0f;
 }
 
@@ -77,8 +77,8 @@ __device__ scalarActFunc p_reluFunc = reluFunc;
 __device__ scalarActFunc p_reluDerivFunc = reluDerivFunc;
 __device__ scalarActFunc p_sigmoidFunc = sigmoidFunc;
 __device__ scalarActFunc p_sigmoidDerivFunc = sigmoidDerivFunc;
-__device__ scalarActFunc p_softmaxFunc = softmaxFunc;
-__device__ scalarActFunc p_softmaxDerivFunc = softmaxDerivFunc;
+__device__ scalarActFunc p_linearFunc = linearFunc;
+__device__ scalarActFunc p_linearDerivFunc = linearDerivFunc;
 
 
 __device__ void get_dLdMag_dLdPhi(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTYPE errMag, DTYPE errAng, DTYPE& dLdMag, DTYPE& dLdPhi) {
@@ -204,7 +204,8 @@ cudaError_t setValueWithCuda(CudaMatrix<DTYPE>& d_Mat, DTYPE value) {
 }
 
 __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE>* d_convR, 
-	CudaMatrixArg<DTYPE>* d_convI, const CudaMatrixArg<DTYPE> d_bias, const ConvParams convParams, const LayerType layType, CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng) {
+	CudaMatrixArg<DTYPE>* d_convI, const CudaMatrixArg<DTYPE> d_bias, const ConvParams convParams, const LayerType layType, CudaMatrixArg<DTYPE> d_nextAct, 
+	CudaMatrixArg<DTYPE> d_nextActMag, CudaMatrixArg<DTYPE> d_nextActAng, scalarActFunc actFunc) {
 	extern __shared__ DTYPE s[];
 	const int filterNum = blockIdx.z;
 	const int sharedInputDim = blockDim.x; // == 20 x 20 == 400
@@ -274,13 +275,16 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, C
 			}
 		}
 		// calculate the magnitude with bias and pass through activation function
-		DTYPE dotValMag = getElemFlatten(d_bias, filterNum);
+		DTYPE dotValMag;
 		if (layType == LayerType::phasorconv) { // no thread divergence possible here
-			dotValMag += d_abs2(dotValR, dotValI);
+			dotValMag = d_abs2(dotValR, dotValI);
 		}
 		else {
-			dotValMag += d_abs2_2(dotValR, dotValI); // no sqrt
+			dotValMag = d_abs2_2(dotValR, dotValI); // no sqrt
 		}
+		setElem(d_nextActMag, ownNextActRow, ownNextActCol, dotValMag, filterNum);
+		dotValMag += getElemFlatten(d_bias, filterNum);
+		dotValMag = (*actFunc)(dotValMag); // has to be positive, should have no effect
 		DTYPE dotValAng = d_ang2(dotValR, dotValI);
 		setElem(d_nextAct, ownNextActRow, ownNextActCol, dotValMag, filterNum);
 		setElem(d_nextActAng, ownNextActRow, ownNextActCol, dotValAng, filterNum);
@@ -289,13 +293,34 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, C
 
 cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	CudaMatrix<DTYPE>* d_convR, CudaMatrix<DTYPE>* d_convI,
-	const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams, const LayerType layType,
-	CudaMatrix<DTYPE>& d_nextAct, CudaMatrix<DTYPE>& d_nextActAng) {
+	const CudaMatrix<DTYPE>& d_convBias, const ConvParams& convParams, const LayerType layType, const ActivationType actType,
+	CudaMatrix<DTYPE>& d_nextAct, CudaMatrix<DTYPE>& d_nextActMag, CudaMatrix<DTYPE>& d_nextActAng) {
 	assert(d_convR[0].mdim == d_convI[0].mdim);
 	assert(d_convR[0].mdim.adim == d_prevAct.mdim.adim);
 	assert(convParams.numFilters == d_nextAct.mdim.adim);
+	assert(d_nextAct.mdim == d_nextActMag.mdim && d_nextAct.mdim == d_nextActAng.mdim);
 
 	cudaError_t cudaStatus(cudaSuccess);
+
+	scalarActFunc actFunc;
+
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_sigmoidFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_linearFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actfunc not yet implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol scalar conv failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
 
 	dim3 bDim(BLOCK_SIZE, BLOCK_SIZE, 1);
 	unsigned int numRowIts = d_nextAct.mdim.rdim / BLOCK_SIZE;
@@ -327,7 +352,7 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	// subset of input is shared memory
 	complexConvolutionKernel <<< gridDim, bDim, sharedSize >>> (d_prevAct.getCudaMatrixArg(),
 		d_cmasR, d_cmasI, d_convBias.getCudaMatrixArg(), convParams, layType,
-		d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg());
+		d_nextAct.getCudaMatrixArg(), d_nextActMag.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg(), actFunc);
 
 	cudaStatus = cudaGetLastError();
 
@@ -344,10 +369,27 @@ cudaError_t complexConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	return cudaStatus;
 }
 
+__global__ void scalarActFuncKernel(CudaMatrixArg<DTYPE> d_act, scalarActFunc actFunc) {
+	unsigned int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_act.mdim)) {
+		DTYPE res = (*actFunc)(getElemFlatten(d_act, flatInd));
+		setElemFlatten(d_act, flatInd, res);
+	}
+}
+
+__global__ void scalarActDerivFuncKernel(const CudaMatrixArg<DTYPE> d_act, CudaMatrixArg<DTYPE> d_err, scalarActFunc actDerivFunc) {
+	unsigned int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
+	if (flatInd < getNumElems(d_act.mdim)) {
+		DTYPE deriv = (*actDerivFunc)(getElemFlatten(d_act, flatInd));
+		DTYPE product = deriv * getElemFlatten(d_err, flatInd);
+		setElemFlatten(d_err, flatInd, product);
+	}
+}
+
 __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE> d_prevError,
-	CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI, CudaMatrixArg<DTYPE> d_bias,
+	CudaMatrixArg<DTYPE> d_weightsR, CudaMatrixArg<DTYPE> d_weightsI,
 	CudaMatrixArg<DTYPE> d_filterErrMag, CudaMatrixArg<DTYPE> d_filterErrPhi, const int actMap, const ConvParams convParams, const LayerType layType,
-	CudaMatrixArg<DTYPE> d_nextAct, CudaMatrixArg<DTYPE> d_nextActAng, CudaMatrixArg<DTYPE> d_nextError) {
+	CudaMatrixArg<DTYPE> d_nextActMag, CudaMatrixArg<DTYPE> d_nextActAng, CudaMatrixArg<DTYPE> d_nextError) {
 	extern __shared__ DTYPE s[];
 	DTYPE* wgtR_s = s;
 	DTYPE* wgtI_s = &(s[getNumElems(d_weightsR.mdim)]);
@@ -387,13 +429,13 @@ __global__ void complexConvBackpropKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMa
 			for (int fCol = 0; fCol < d_weightsR.mdim.cdim; ++fCol) {
 				int nextRowInd = prevRowInd + (convParams.filterDim.rdim / 2) - fRow;
 				int nextColInd = prevColInd + (convParams.filterDim.cdim / 2) - fCol;
-				if (nextRowInd >= 0 && nextRowInd < d_nextAct.mdim.rdim && nextColInd >= 0 && nextColInd < d_nextAct.mdim.cdim) {
+				if (nextRowInd >= 0 && nextRowInd < d_nextActMag.mdim.rdim && nextColInd >= 0 && nextColInd < d_nextActMag.mdim.cdim) {
 					// use aisle of prev to select filter aisle
 					DTYPE wgtR = wgtR_s[getInd(d_weightsR.mdim, fRow, fCol, prevAisleInd)];
 					DTYPE wgtI = wgtI_s[getInd(d_weightsI.mdim, fRow, fCol, prevAisleInd)];
 					DTYPE errMag = getElem(d_nextError, nextRowInd, nextColInd, actMap); // error aisle corresponds to actMap
 					DTYPE errAng = 0.0f;
-					DTYPE Y = getElem(d_nextAct, nextRowInd, nextColInd, actMap) - getElemFlatten(d_bias, actMap); // correct for bias
+					DTYPE Y = getElem(d_nextActMag, nextRowInd, nextColInd, actMap);
 					DTYPE Yang = getElem(d_nextActAng, nextRowInd, nextColInd, actMap);
 					DTYPE YR = Y * cosf(Yang);
 					DTYPE YI = Y * sinf(Yang);
@@ -473,8 +515,8 @@ __global__ void updateKernelBias(const CudaMatrixArg<DTYPE> d_nextError, CudaMat
 }
 
 cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
-	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams, const LayerType layType,
-	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
+	CudaMatrix<DTYPE>& d_prevError, CudaMatrix<DTYPE>* d_weightsR, CudaMatrix<DTYPE>* d_weightsI, CudaMatrix<DTYPE>& d_bias, const ConvParams& convParams, const LayerType layType, const ActivationType actType,
+	const CudaMatrix<DTYPE>& d_nextAct, const CudaMatrix<DTYPE>& d_nextActMag, const CudaMatrix<DTYPE>& d_nextActAng, const CudaMatrix<DTYPE>& d_nextError, float lrnRate) {
 	// check that the dimensions fit
 	assert(d_prevAct.mdim == d_prevError.mdim); // prev parallel
 	assert(d_nextError.mdim == d_nextAct.mdim);
@@ -482,6 +524,37 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	assert(d_weightsR[0].mdim == d_weightsI[0].mdim); // weights parallel
 
 	cudaError_t cudaStatus(cudaSuccess);
+
+	scalarActFunc actDerivFunc;
+
+	switch (actType) {
+	case ActivationType::sigmoid:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_sigmoidDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::relu:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
+		break;
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_linearDerivFunc, sizeof(scalarActFunc));
+		break;
+	default:
+		throw std::logic_error("actDerivfunc not implemented \n");
+		break;
+	}
+	if (cudaStatus != cudaSuccess) {
+		printf("cudaMemcpyFromSymbol complexDerivFunc failed! %s\n", cudaGetErrorString(cudaStatus));
+	}
+
+	unsigned int numFlatIts = d_nextAct.mdim.getNumElems() / VEC_SIZE;
+	if (numFlatIts * VEC_SIZE < d_nextAct.mdim.getNumElems())
+		++numFlatIts;
+
+	// calculate activation function derivative of nextError
+	// scalarActDerivFuncKernel <<< numFlatIts, VEC_SIZE >>> (d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "scalarActFuncKerel FCBackprop launch failed: %s\n", cudaGetErrorString(cudaStatus));
+	}
 
 	const unsigned int linearBlock = BLOCK_SIZE * BLOCK_SIZE;
 	unsigned int numLinearBlocks = d_prevAct.mdim.getNumElems() / linearBlock;
@@ -502,9 +575,9 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 
 		complexConvBackpropKernel <<< numLinearBlocks, linearBlock, sharedSize >>>
 			(d_prevAct.getCudaMatrixArg(), d_prevError.getCudaMatrixArg(), 
-				d_weightsR[actMap].getCudaMatrixArg(), d_weightsI[actMap].getCudaMatrixArg(), d_bias.getCudaMatrixArg(),
+				d_weightsR[actMap].getCudaMatrixArg(), d_weightsI[actMap].getCudaMatrixArg(),
 				d_filterErrMag.getCudaMatrixArg(), d_filterErrPhi.getCudaMatrixArg(), actMap, convParams, layType,
-				d_nextAct.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg(), 
+				d_nextActMag.getCudaMatrixArg(), d_nextActAng.getCudaMatrixArg(), 
 				d_nextError.getCudaMatrixArg());
 
 		cudaStatus = cudaGetLastError();
@@ -534,23 +607,6 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 	}
 
 	return cudaStatus;
-}
-
-__global__ void scalarActFuncKernel(CudaMatrixArg<DTYPE> d_act, scalarActFunc actFunc) {
-	unsigned int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
-	if (flatInd < getNumElems(d_act.mdim)) {
-		DTYPE res = (*actFunc)(getElemFlatten(d_act, flatInd));
-		setElemFlatten(d_act, flatInd, res);
-	}
-}
-
-__global__ void scalarActDerivFuncKernel(const CudaMatrixArg<DTYPE> d_act, CudaMatrixArg<DTYPE> d_err, scalarActFunc actDerivFunc) {
-	unsigned int flatInd = threadIdx.x + (blockDim.x * blockIdx.x);
-	if (flatInd < getNumElems(d_act.mdim)) {
-		DTYPE deriv = (*actDerivFunc)(getElemFlatten(d_act, flatInd));
-		DTYPE product = deriv * getElemFlatten(d_err, flatInd);
-		setElemFlatten(d_err, flatInd, product);
-	}
 }
 
 __global__ void scalarConvolutionKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMatrixArg<DTYPE>* d_conv,
@@ -631,8 +687,8 @@ cudaError_t scalarConvolutionWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMa
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_linearFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
@@ -772,8 +828,8 @@ cudaError_t scalarConvolutionBackpropWithCuda(CudaMatrix<DTYPE>& d_prevAct, Cuda
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_linearDerivFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actDerivfunc not implemented \n");
@@ -897,8 +953,8 @@ cudaError_t scalarFCForwardPropWithCuda(const CudaMatrix<DTYPE>& d_opVec, const 
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_linearFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
@@ -968,8 +1024,8 @@ cudaError_t scalarAvgPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const Conv
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_linearFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
@@ -1043,8 +1099,8 @@ cudaError_t scalarMaxPoolWithCuda(const CudaMatrix<DTYPE>& d_prevAct, const Conv
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_reluFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_softmaxFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actFunc, p_linearFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
@@ -1148,8 +1204,8 @@ cudaError_t scalarFCBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct, CudaMat
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_linearDerivFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actDerivfunc not implemented \n");
@@ -1241,8 +1297,8 @@ cudaError_t scalarAvgPoolBackpropWithCuda(CudaMatrix<DTYPE>& d_prevError, const 
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_linearDerivFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
@@ -1308,8 +1364,8 @@ cudaError_t scalarMaxPoolBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct, Cu
 	case ActivationType::relu:
 		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_reluDerivFunc, sizeof(scalarActFunc));
 		break;
-	case ActivationType::softmax:
-		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_softmaxDerivFunc, sizeof(scalarActFunc));
+	case ActivationType::linear:
+		cudaStatus = cudaMemcpyFromSymbol(&actDerivFunc, p_linearDerivFunc, sizeof(scalarActFunc));
 		break;
 	default:
 		throw std::logic_error("actfunc not yet implemented \n");
