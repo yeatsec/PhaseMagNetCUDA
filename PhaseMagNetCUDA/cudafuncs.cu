@@ -9,7 +9,7 @@
 #include <math.h>
 
 constexpr auto ALPHA = 0.001f;
-constexpr auto PC_ALPHA = 0.001f;
+constexpr auto PC_ALPHA = 0.000f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
@@ -284,7 +284,7 @@ __global__ void complexConvolutionKernel(const CudaMatrixArg<DTYPE> d_prevAct, C
 		}
 		setElem(d_nextActMag, ownNextActRow, ownNextActCol, dotValMag, filterNum);
 		dotValMag += getElemFlatten(d_bias, filterNum);
-		dotValMag = (*actFunc)(dotValMag); // has to be positive, should have no effect
+		dotValMag = (*actFunc)(dotValMag);
 		DTYPE dotValAng = d_ang2(dotValR, dotValI);
 		setElem(d_nextAct, ownNextActRow, ownNextActCol, dotValMag, filterNum);
 		setElem(d_nextActAng, ownNextActRow, ownNextActCol, dotValAng, filterNum);
@@ -550,7 +550,7 @@ cudaError_t complexConvBackpropWithCuda(const CudaMatrix<DTYPE>& d_prevAct,
 		++numFlatIts;
 
 	// calculate activation function derivative of nextError
-	// scalarActDerivFuncKernel <<< numFlatIts, VEC_SIZE >>> (d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
+	scalarActDerivFuncKernel <<< numFlatIts, VEC_SIZE >>> (d_nextAct.getCudaMatrixArg(), d_nextError.getCudaMatrixArg(), actDerivFunc);
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "scalarActFuncKerel FCBackprop launch failed: %s\n", cudaGetErrorString(cudaStatus));

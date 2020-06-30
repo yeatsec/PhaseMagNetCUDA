@@ -20,6 +20,35 @@ enum class LayerType { input, fc, conv, maxpool, avgpool, phasorconv, phasorconv
 enum class ActivationType { relu, sigmoid, linear };
 
 
+inline const char* const getLayerTypeString(LayerType layType) {
+	switch (layType) {
+	case LayerType::input:
+		return "input";
+		break;
+	case LayerType::fc:
+		return "fc";
+		break;
+	case LayerType::conv:
+		return "conv";
+		break;
+	case LayerType::maxpool:
+		return "maxpool";
+		break;
+	case LayerType::avgpool:
+		return "avgpool";
+		break;
+	case LayerType::phasorconv:
+		return "phasorconv";
+		break;
+	case LayerType::phasorconv2:
+		return "phasorconv2";
+		break;
+	default:
+		return "unknown";
+		break;
+	}
+}
+
 typedef float DTYPE; // data type for neural activation and weights
 typedef unsigned char uchar;
 

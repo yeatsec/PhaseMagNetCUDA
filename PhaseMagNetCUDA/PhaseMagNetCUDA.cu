@@ -10,7 +10,7 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
-#define SEED 74894
+#define SEED 4895
 
 #define PRINT_WEIGHT
 // #define PRINT_ACT
@@ -71,7 +71,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 				throw std::logic_error("Layer Type not implemented\n");
 			}
 			elemPtr->initializeWeightsPrev(matDim, numSets); // weightsprev pointer set, device CudaMatrixArg pointers allocated
-			printf("linked\n");
+			printf("%s\n", getLayerTypeString(elemPtr->layParams.layType));
 			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
 	};
@@ -84,7 +84,7 @@ void PhaseMagNetCUDA::initialize(bool fromFile) {
 			}
 			LinkedListNode<Layer>* prevNodePtr = ptr->getPrev();
 			Layer* prevPtr = prevNodePtr->getElemPtr();
-			printf("linked\n");
+			printf("%s\n", getLayerTypeString(elemPtr->layParams.layType));
 			prevPtr->linkWeightsNext(elemPtr); // link ptr
 		}
 	};

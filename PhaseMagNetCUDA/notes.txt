@@ -66,10 +66,11 @@ Experiments:
 	777 fashion_scalar0_chkpt0: lenet5 arch
 	1564 fashion_mixed0_chkpt0: lenet5 phasorconv first
 	48974 fashion_phasor0_chkpt0: lenet5 phasorconv all 
-			0.0		0.1		0.2		0.3
-	scalar0	85.35	84.67	68.45	47.90
-	mixed0	85.49	77.59	62.47	38.91
-	phasor0	86.42	75.30	48.96	27.98
+
+	74894	fmnist phasor3
+	489		fmnist phasor4
+	4895	fmnist phasor4b
+
 
 	VGG8: 32 32 > 64 64 > 128 128 > FC(64) FC(10)
 	SEED | MODEL: desciption CIFAR10
