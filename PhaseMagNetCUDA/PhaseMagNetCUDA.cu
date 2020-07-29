@@ -10,7 +10,7 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
-#define SEED 4895
+#define SEED 15674
 
 #define PRINT_WEIGHT
 // #define PRINT_ACT
@@ -117,13 +117,13 @@ void PhaseMagNetCUDA::addLayer(const LayerParams& lp) {
 	layers.append(lay);
 }
 
-void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose, float dropout) {
+void PhaseMagNetCUDA::train(const unsigned int num_examples, uchar** inputData, uchar* labels, float lrnRate, bool verbose, float dropout, float linfNoise, float gaussNoise) {
 	assert(initialized);
 	Matrix<DTYPE> ex(layers.getTail()->getElemPtr()->layParams.matDim);
 	ex.fill(0.0);
 	for (unsigned int i = 0; i < num_examples; ++i) {
 		ex.setElem(0, labels[i], 1.0);
-		setInput(inputData[i]);
+		setInput(inputData[i], linfNoise, gaussNoise);
 		resetState(); // doesn't overwrite input
 		forwardPropagate(dropout);
 		backwardPropagate(ex, lrnRate);
@@ -203,12 +203,12 @@ void PhaseMagNetCUDA::genAdv(const std::string name, const unsigned int num_exam
 	printf("Adversarial Output deallocated\n");
 }
 
-Matrix<float> PhaseMagNetCUDA::predict(const unsigned int num_examples, uchar** inputData, bool verbose) {
+Matrix<float> PhaseMagNetCUDA::predict(const unsigned int num_examples, uchar** inputData, bool verbose, float linfNoise) {
 	assert(initialized);
 	MatrixDim mdim(num_examples, layers.getTail()->getElem().layParams.matDim.cdim, sizeof(float)); // hardcode float here
 	Matrix<DTYPE> predictions(mdim);
 	for (unsigned int i = 0; i < num_examples; ++i) {
-		setInput(inputData[i]);
+		setInput(inputData[i], linfNoise);
 		forwardPropagate();
 		Matrix<DTYPE> output(getOutput());
 		for (unsigned int j = 0; j < predictions.mdim.cdim; ++j) {
@@ -230,9 +230,9 @@ Matrix<float> PhaseMagNetCUDA::predict(const unsigned int num_examples, uchar** 
 	return predictions;
 }
 
-float PhaseMagNetCUDA::evaluate(const unsigned int num_examples, uchar** inputData, uchar* labels, bool verbose) {
+float PhaseMagNetCUDA::evaluate(const unsigned int num_examples, uchar** inputData, uchar* labels, bool verbose, float linfNoise) {
 	assert(initialized);
-	Matrix<float> predictions(predict(num_examples, inputData, verbose));
+	Matrix<float> predictions(predict(num_examples, inputData, verbose, linfNoise));
 	unsigned int num_correct = 0;
 	for (unsigned int i = 0; i < num_examples; ++i) {
 		float maxval = 0;
@@ -250,10 +250,16 @@ float PhaseMagNetCUDA::evaluate(const unsigned int num_examples, uchar** inputDa
 	return ((float) num_correct) / ((float) num_examples);
 }
 
-void PhaseMagNetCUDA::setInput(const uchar* const ucharptr) {
+void PhaseMagNetCUDA::setInput(const uchar* const ucharptr, float linfNoise, float gaussNoise) {
 	Layer* layPtr = layers.getHead()->getElemPtr();
 	Matrix<DTYPE> temp(layPtr->layerData.mdim);
 	temp.fillFromUbyte(ucharptr);
+	if (linfNoise > 0.0f) {
+		temp.addLinfNoise(linfNoise);
+	}
+	else if (gaussNoise > 0.0f) {
+		temp.addGaussNoise(gaussNoise);
+	}
 	layPtr->layerData.fillFromMatrix(temp);
 }
 
@@ -361,9 +367,16 @@ void PhaseMagNetCUDA::forwardPropagate(float dropout) {
 }
 
 void PhaseMagNetCUDA::backwardPropagate(const Matrix<DTYPE>& expected, float lrnRate, bool adjInput, float eps, bool targeted) {
+	Matrix<DTYPE> err; // forward declaration
 	// calculate error at the outputs
-	auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
-	Matrix<DTYPE> err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
+	if (adjInput) {
+		auto subtract = [](DTYPE e, DTYPE o) { return (e == ((DTYPE)1.0f) ? e - o : ((DTYPE)0.0f));};
+		err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract); // assignment
+	}
+	else {
+		auto subtract = [](DTYPE e, DTYPE o) {return e - o; };
+		err = Matrix<DTYPE>::pointwiseOp(expected, getOutput(), subtract);
+	}
 	((layers.getTail()->getElemPtr())->errorData).fillFromMatrix(err);
 	// walk Layer list in reverse and update layer error incrementally, adjust "next" weights
 	// call matmul kernels on transpose weights

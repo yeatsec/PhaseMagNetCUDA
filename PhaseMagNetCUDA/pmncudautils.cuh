@@ -7,6 +7,7 @@
 #include <assert.h>
 #include <iostream>
 #include <curand_kernel.h>
+#include <random>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
@@ -178,6 +179,27 @@ struct Matrix {
 	void fillRandom(T minval, T maxval) {
 		for (size_t i = 0; i < getNumElems(); ++i)
 			data[i] = minval + static_cast <T> (rand()) / (static_cast <T> (RAND_MAX / (maxval-minval)));
+	}
+	void addLinfNoise(T amount) {
+		for (unsigned int i = 0; i < getNumElems(); ++i)
+			data[i] += (rand() > RAND_MAX / 2) ? amount : -1.0f * amount;
+	}
+	void addGaussNoise(T amount) {
+		std::default_random_engine generator;
+		std::normal_distribution<T> dist(((T)0.0f), amount);
+		for (unsigned int i = 0; i < getNumElems(); ++i)
+			data[i] += dist(generator);
+	}
+	void clip(T minval, T maxval) {
+		assert(minval <= maxval);
+		for (unsigned int i = 0; i < getNumElems(); ++i) {
+			if (data[i] < minval) {
+				data[i] = minval;
+			}
+			else if (data[i] > maxval) {
+				data[i] = maxval;
+			}
+		}
 	}
 	Matrix<T> transpose() {
 		assert(mdim.adim == 1);

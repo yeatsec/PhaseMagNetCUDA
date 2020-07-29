@@ -8,8 +8,9 @@
 #include <assert.h>
 #include <math.h>
 
-constexpr auto ALPHA = 0.001f;
-constexpr auto PC_ALPHA = 0.000f;
+constexpr auto ALPHA = 0.00f;
+constexpr auto PC_ALPHA = 0.001f;
+constexpr auto PC_L2 = 0.000f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
 void phi_to_comp(DTYPE phi, DTYPE& r, DTYPE& i) {
@@ -120,8 +121,8 @@ __device__ void get_dLdMag_dLdPhi2(DTYPE Yr, DTYPE Yi, DTYPE wxr, DTYPE wxi, DTY
 	dLdPhi = 2.0f * (abswx * absY_wx * ((-invRotwxi) / absInvRotwx)) * errAng;
 }
 
-__device__ void scalarAdjustWeight(DTYPE& wgt, const DTYPE inp, const DTYPE err, const DTYPE lrnRate) {
-	wgt += ((inp * err) - wgt * ALPHA) * lrnRate; // with L2 regularization
+__device__ void scalarAdjustWeight(DTYPE& wgt, const DTYPE inp, const DTYPE err, const DTYPE lrnRate, const DTYPE alpha) {
+	wgt += ((inp * err) - (copysignf(1.0f, wgt) * alpha)) * lrnRate; // with L1 regularization
 }
 
 __device__ int getInd(MatrixDim mdim, int row, int col, int aisle = 0) {
@@ -482,7 +483,7 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 		// CHANGE - scale magnitude change by current magnitude
 		DTYPE absw = d_abs2(wR, wI);
 		if (absw > 0.0f) {
-			DTYPE reg = (layType == LayerType::phasorconv) ? PC_ALPHA * absw : PC_ALPHA * absw * absw;
+			DTYPE reg = PC_ALPHA + PC_L2 * absw; // added in L2 reg
 			wR += ((eMag - reg) * (wR / absw)) * lrnRate;
 			wI += ((eMag - reg) * (wI / absw)) * lrnRate;
 			// rotate weights by dPhi
@@ -509,7 +510,7 @@ __global__ void updateKernelBias(const CudaMatrixArg<DTYPE> d_nextError, CudaMat
 			errSum += s[i];
 		}
 		DTYPE bias = getElemFlatten(d_bias, filterNum);
-		scalarAdjustWeight(bias, 1.0f, errSum, lrnRate); // / ((DTYPE)astride), lrnRate);
+		scalarAdjustWeight(bias, 1.0f, errSum, lrnRate, ALPHA); // / ((DTYPE)astride), lrnRate);
 		setElemFlatten(d_bias, filterNum, bias);
 	}
 }
@@ -804,7 +805,7 @@ __global__ void scalarUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weights,
 		DTYPE w = getElem(d_weights, kRow, kCol, kAisle);
 		DTYPE err = getElem(d_filterErr, kRow, kCol, kAisle);
 
-		scalarAdjustWeight(w, 1.0f, err, lrnRate); // input has already been multiplied into error
+		scalarAdjustWeight(w, 1.0f, err, lrnRate, ALPHA); // input has already been multiplied into error
 		// write back
 		setElem(d_weights, kRow, kCol, w, kAisle);
 	}
@@ -1165,7 +1166,7 @@ __global__ void scalarUpdateBiasKernel(CudaMatrixArg<DTYPE> d_nextError, CudaMat
 	if (flatInd < getNumElems(d_nextError.mdim)) {
 		DTYPE err = getElemFlatten(d_nextError, flatInd);
 		DTYPE wgt = getElemFlatten(d_nextBias, flatInd);
-		scalarAdjustWeight(wgt, ((DTYPE)1.0f), err, lrnRate);
+		scalarAdjustWeight(wgt, ((DTYPE)1.0f), err, lrnRate, ALPHA);
 		setElemFlatten(d_nextBias, flatInd, wgt);
 	}
 }
@@ -1177,7 +1178,7 @@ __global__ void scalarUpdateMatrixKernel(CudaMatrixArg<DTYPE> d_prevAct, CudaMat
 		DTYPE wgt = getElem(d_weights, wgtRowInd, wgtColInd);
 		DTYPE inp = getElemFlatten(d_prevAct, wgtRowInd);
 		DTYPE err = getElemFlatten(d_nextError, wgtColInd);
-		scalarAdjustWeight(wgt, inp, err, lrnRate);
+		scalarAdjustWeight(wgt, inp, err, lrnRate, 0.0f);
 		setElem(d_weights, wgtRowInd, wgtColInd, wgt);
 	}
 }
