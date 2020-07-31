@@ -13,8 +13,8 @@
 #include "read_dataset.cuh"
 
 void buildNetworkLenet5(PhaseMagNetCUDA& net) {
-    const int numConv1Filters = 8;
-    const int numConv2Filters = 24;
+    const int numConv1Filters = 32;
+    const int numConv2Filters = 96;
     LayerType convLayType(LayerType::phasorconv);
     ActivationType convActType(ActivationType::linear);
     LayerType poolLayType(LayerType::avgpool);
@@ -204,8 +204,8 @@ void run_mnist(char* model_name, char* model_savename, bool buildNetwork, char* 
     printf("L-Infinity Noise: %2.3f\n", linf);
     printf("Gaussian Noise: %2.3f\n", gauss);
 
-    //char* advName = "fmnist_phasor0e_alpha0.05_chkpt1_fgsm_eps0.080_step1.idx3-ubyte";
-    //net.genAdv(advName, n_ims_test, 28, 28, imdata_test, ladata_test, 0.080, 1, /* targeted */ false, /* randomStart */ false, /* verbose */ true);
+    //char* advName = "fmnist_phasor0_alphaprop0.3_chkpt0_fgsm_eps0.040_step1.idx3-ubyte";
+    //net.genAdv(advName, n_ims_test, 28, 28, imdata_test, ladata_test, 0.040, 1, /* targeted */ false, /* randomStart */ false, /* verbose */ true);
     //int n_ims_adv, adv_ims_size;
     //uchar** adv_set = read_mnist_images(advName, n_ims_adv, adv_ims_size);
     //acc = net.evaluate(/*n_ims_test*/ n_ims_adv, adv_set, ladata_test, /* verbose */ true);
@@ -455,13 +455,13 @@ void run_cifar(char* model_name, char* model_savename, bool buildNetwork, char* 
 
 int main()
 {
-    bool mnist = false;
+    bool mnist = true;
     if (mnist)
     {
-        char* modelName = "fmnist_scalar0_alpha0.01_chkpt0.txt";
+        char* modelName = "fmnist_phasor2_alphaprop0.5_chkpt1.txt";
         char* saveName = "trash.txt";
         bool build = false; // check buildLenet5 if true, check SEED
-        char* testName = "..\\..\\..\\..\\fashion-mnist\\data\\fashion\\fmnist_phasor0_alpha0.0_chkpt0_fgsm_eps0.000_step1.idx3-ubyte"; // t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte // lowfreq_eps0.200_mnist_test_images.idx3-ubyte
+        char* testName = "..\\..\\..\\..\\fashion-mnist\\data\\fashion\\fmnist_net0.pth_eps0.160.idx3-ubyte"; // t10k-images.idx3-ubyte // ann_a_advclp_0.2eps-ubyte // lowfreq_eps0.200_mnist_test_images.idx3-ubyte
         //char* testName = "..\\..\\..\\..\\mnist\\t10k-images.idx3-ubyte"; // mnist_net1.pth_eps0.100.idx3-ubyte fmnist_net0.pth_eps0.000.idx3-ubyte
         //char* testName = "fmnist_scalar0_chkpt0_fgsm_eps0.1_step1.idx3-ubyte"; // fmnist_phasor0b_alpha0.01_chkpt0_fgsm_eps0.040_step1.idx3-ubyte
         float lrnRate = 0.001f;

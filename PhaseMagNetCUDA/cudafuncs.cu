@@ -9,7 +9,8 @@
 #include <math.h>
 
 constexpr auto ALPHA = 0.00f;
-constexpr auto PC_ALPHA = 0.001f;
+constexpr auto PC_ALPHA = 0.0f;
+constexpr auto PC_ALPHA_PROP = 0.5f;
 constexpr auto PC_L2 = 0.000f;
 constexpr auto GRADIENT_CLIP = 1.0f;
 
@@ -483,7 +484,7 @@ __global__ void complexUpdateKernelWeights(CudaMatrixArg<DTYPE> d_weightsR, Cuda
 		// CHANGE - scale magnitude change by current magnitude
 		DTYPE absw = d_abs2(wR, wI);
 		if (absw > 0.0f) {
-			DTYPE reg = PC_ALPHA + PC_L2 * absw; // added in L2 reg
+			DTYPE reg = PC_ALPHA + PC_ALPHA_PROP * fabsf(eMag) + PC_L2 * absw; // added in L2 reg
 			wR += ((eMag - reg) * (wR / absw)) * lrnRate;
 			wI += ((eMag - reg) * (wI / absw)) * lrnRate;
 			// rotate weights by dPhi

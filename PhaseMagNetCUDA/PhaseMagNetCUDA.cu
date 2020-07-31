@@ -10,7 +10,7 @@
 #include "PhaseMagNetCUDA.cuh"
 #include "cudafuncs.cuh"
 
-#define SEED 15674
+#define SEED 15231
 
 #define PRINT_WEIGHT
 // #define PRINT_ACT
